@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Kuasar Sandbox — single-node Demo deployment (Path A: aggregate release +
-# workbench, no source build).  Target environment: this WSL2 host (Ubuntu
+# Kuasar Sandbox — single-node Demo deployment.
+#   Path A: aggregate release + workbench, no source build (setup/quick/full).
+#   Path B: build the components from source, then run the Demo (src-*).
+# Target environment: this WSL2 host (Ubuntu
 # 24.04, native /dev/kvm, local Clash proxy, Docker Desktop present but unused).
 #
 # Everything stateful lives under $KUASAR_DEPLOY_DATA (default
@@ -18,6 +20,15 @@
 #   ./demo.sh stop       # stop Demo storage tier + workbench instance
 #   ./demo.sh reset      # delete Demo data inside workbench
 #   ./demo.sh cleanup    # stop + remove workbench container/image artifacts
+#
+# Path B (source build; for changing component code) — see DEPLOY.md "Path B":
+#   ./demo.sh src-clone  # clone/refresh the 5 component repos at pinned tags
+#   ./demo.sh src-build  # build all products from source (workbench build mode)
+#   ./demo.sh src-demo [quick]  # run the Demo against source-built binaries
+#   ./demo.sh src-full  # full source-build Demo (fan-out + migration)
+#   ./demo.sh src-status # show component checkouts + source-built products
+#   ./demo.sh src-clean  # remove leaf build outputs (keeps deps + caches)
+#   ./demo.sh src-full-clean # remove dependency builds too (next build is cold)
 #
 # See DEPLOY.md for the full explanation, prerequisites and troubleshooting.
 # =============================================================================
@@ -40,6 +51,27 @@ DATADIR="/work/kuasar-demo-run"           # inside workbench; must be kuasar-dem
 CPUS="${WB_CPUS:-6}"
 MEMGIB="${WB_MEMGIB:-6}"
 PROXY_PORT="${CLASH_PROXY_PORT:-7897}"
+
+# --- Path B (source build) configuration ------------------------------------
+SRC_ROOT="${KUASAR_SRC_ROOT:-$(dirname "$REPO")}"   # parent of the 6 repos
+BUILD_STATE="$DATA/kuasar-build-state"
+BUILD_NAME="build"
+BUILD_NAME_FILE="$DATA/.build-name"
+GOPROXY_VALUE="${GOPROXY:-https://goproxy.cn,direct}"   # proxy.golang.org is blocked here
+CARGO_MIRROR="${CARGO_MIRROR:-https://rsproxy.cn/index/}"  # static.crates.io is throttled here
+SRC_DEMO_DATA="$DATA/kuasar-demo-source"
+# Component pins for the aggregate release selected above (from releases/release.yaml).
+# guest-runtime uses the runtime tag; the kernel (vmlinux) is a separate tag.
+pins(){ case "${1:-$VERSION}" in
+  release-v0.1.6) cat <<'EOF'
+accelerator git v0.1.6
+connector git v0.1.5
+sandboxer git v0.1.6
+orchestrator git v0.1.6
+guest-runtime git runtime-v0.1.6
+EOF
+;; *) die "no component pins recorded for ${1:-$VERSION}; see releases/release.yaml" ;;
+esac; }
 
 log(){ printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 ok(){  printf '\033[1;32m  + %s\033[0m\n' "$*"; }
@@ -267,6 +299,205 @@ stop_all_tiers(){
 }
 
 # ---------------------------------------------------------------------------
+# Path B — source build (change component code, rebuild, re-run)
+# ---------------------------------------------------------------------------
+build_instance_running(){
+  [ "$(docker inspect -f '{{.State.Running}}' "kuasar-workbench-$BUILD_NAME" 2>/dev/null)" = true ]
+}
+
+src_build_instance_up(){
+  need_release
+  if build_instance_running; then ok "build instance already running"; return 0; fi
+  if docker inspect "kuasar-workbench-$BUILD_NAME" >/dev/null 2>&1; then
+    log "restarting build instance"
+    python3 "$WB" --root "$BUILD_STATE" --name "$BUILD_NAME" start \
+      --image "$IMAGE" --mode build --source "$SRC_ROOT" --cpus "${BUILD_CPUS:-4}" --memory-gib "${BUILD_MEMGIB:-6}"
+    return 0
+  fi
+  log "creating build instance (source=$SRC_ROOT)"
+  mkdir -p "$BUILD_STATE"; chmod 700 "$BUILD_STATE"
+  python3 "$WB" --root "$BUILD_STATE" --name "$BUILD_NAME" start \
+    --image "$IMAGE" --mode build --source "$SRC_ROOT" --cpus "${BUILD_CPUS:-4}" --memory-gib "${BUILD_MEMGIB:-6}"
+  printf '%s\n' "$BUILD_NAME" >"$BUILD_NAME_FILE"
+}
+
+bexec(){ python3 "$WB" --root "$BUILD_STATE" --name "$BUILD_NAME" exec -- "$@"; }
+
+# One-time per-instance: seed the build HOME with China-accessible mirrors and
+# seed the expensive, code-independent guest kernel from the selected release
+# so `make build` only (re)compiles what actually changed.
+src_seed_build_env(){
+  bexec bash -lc "go env -w GOPROXY=$GOPROXY_VALUE >/dev/null && mkdir -p /work/home/.cargo && cat > /work/home/.cargo/config.toml <<'EOF'
+[source.crates-io]
+replace-with = \"rsproxy-sparse\"
+[source.rsproxy-sparse]
+registry = \"sparse+$CARGO_MIRROR\"
+[net]
+git-fetch-with-cli = true
+EOF"
+  local vmlinux="$RELEASE/bin/vmlinux"
+  if [ -f "$vmlinux" ]; then
+    bexec bash -lc "mkdir -p /src/guest-runtime/native-deps/bin/$ARCH && \
+      if [ ! -s /src/guest-runtime/native-deps/bin/$ARCH/vmlinux ]; then \
+        cp -f /inputs/release/bin/vmlinux /src/guest-runtime/native-deps/bin/$ARCH/vmlinux; \
+      fi" 2>/dev/null || true
+  fi
+}
+
+cmd_src_clone(){
+  mkdir -p "$SRC_ROOT"
+  local name kind tag dir
+  while read -r name kind tag; do
+    dir="$SRC_ROOT/$name"
+    if [ -d "$dir/.git" ]; then
+      ok "$name already cloned ($(git -C "$dir" describe --tags --always 2>/dev/null || echo '?'))"
+      continue
+    fi
+    log "cloning $name @ $tag -> $dir"
+    git clone --branch "$tag" --depth 1 "https://github.com/kuasar-sandbox/$name.git" "$dir"
+  done < <(pins)
+  ok "component checkouts present under $SRC_ROOT"
+}
+
+src_products(){ ls "$REPO/bin/$ARCH" 2>/dev/null; }
+
+cmd_src_build(){
+  src_build_instance_up
+  src_seed_build_env
+  # e2e-tools: reuse zot/versitygw already shipped with the release instead of
+  # re-downloading from the (throttled) GitHub release CDN.
+  local tools="$REPO/build/e2e-tools/$ARCH"
+  mkdir -p "$tools"
+  for t in zot versitygw; do
+    if [ ! -s "$tools/$t" ] && [ -s "$RELEASE/test/e2e/helpers/$ARCH/$t" ]; then
+      cp -f "$RELEASE/test/e2e/helpers/$ARCH/$t" "$tools/$t"
+      ok "seeded build/e2e-tools/$ARCH/$t from release helpers"
+    fi
+  done
+  log "building all products from source (make build)"
+  bexec bash -lc 'set -o pipefail; cd /src/kuasar-sandbox && make build 2>&1 | tail -40; echo "MAKE_EXIT=${PIPESTATUS[0]}"'
+  log "source products in $REPO/bin/$ARCH:"
+  src_products | sed 's/^/    /'
+}
+
+src_host_prep(){
+  ensure_networking; ensure_egress
+  local venv="$REPO/.demo-venv"
+  if [ ! -x "$venv/bin/python3" ]; then
+    log "creating Demo virtualenv $venv (pinned e2b)"
+    python3 -m venv "$venv"
+    "$venv/bin/pip" install -q --disable-pip-version-check \
+      --requirement "$REPO/test/demo/requirements.txt"
+  fi
+  for t in openssl ip curl sqlite3 iptables flock setsid timeout mkfs.ext4; do
+    command -v "$t" >/dev/null 2>&1 || die "missing host tool for the Demo: $t"
+  done
+}
+
+stop_src_tier(){
+  [ -f "$SRC_DEMO_DATA/prep.env" ] || return 0
+  sudo -n env DEMO_DATA_DIR="$SRC_DEMO_DATA" DOCKER_HOST="$DOCKER_HOST" PATH="$PATH" \
+    bash "$REPO/test/demo/demo_prep.sh" stop >/dev/null 2>&1 || true
+  # A rebuild replaces the binaries under any still-running tier, after which
+  # the ownership check (exe path + starttime) can no longer verify them and
+  # `stop` refuses to act. If ports 5000/5050 are still held by our own
+  # (now-"(deleted)") processes, clear them so the run can proceed safely.
+  local port pid exe
+  for port in 5000 5050; do
+    pid="$(sudo -n ss -ltnpH "sport = :$port" 2>/dev/null | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2)"
+    [ -n "$pid" ] || continue
+    exe="$(sudo -n readlink -f "/proc/$pid/exe" 2>/dev/null || true)"
+    case "$exe" in
+      *kuasar-sandbox*|*kuasar-deploy-data*)
+        warn "stale Demo tier still holds port $port (pid $pid, $exe); terminating"
+        sudo -n kill -TERM "$pid" 2>/dev/null || true
+        sleep 1
+        sudo -n kill -0 "$pid" 2>/dev/null && sudo -n kill -KILL "$pid" 2>/dev/null || true ;;
+    esac
+  done
+  sudo -n rm -f "$SRC_DEMO_DATA"/pids/*.pid 2>/dev/null || true
+}
+
+cmd_src_demo(){
+  [ -x "$REPO/bin/$ARCH/node-ctl" ] || die "no source build in $REPO/bin/$ARCH; run: $0 src-build"
+  src_host_prep
+  # The persistent storage tier owns fixed host ports 5000/5050; stop any prior
+  # source-build tier (and note Path A uses a different dir, so avoid running both).
+  stop_src_tier
+  if [ -n "$(instance_name)" ] && instance_running; then
+    warn "Path A workbench instance is running; its storage tier may also hold 5000/5050"
+  fi
+  local quick="${1:-}"
+  log "preparing persistent Demo storage tier (source-built binaries)"
+  sudo -n env DEMO_DATA_DIR="$SRC_DEMO_DATA" BIN="$REPO/bin/$ARCH" \
+    ZOT_BIN="$REPO/build/e2e-tools/$ARCH/zot" \
+    VGW_BIN="$REPO/build/e2e-tools/$ARCH/versitygw" \
+    DOCKER_HOST="$DOCKER_HOST" PATH="$PATH" \
+    bash "$REPO/test/demo/demo_prep.sh" 2>&1 | tail -15
+  log "running the Demo against source-built binaries${quick:+ (quick)}"
+  sudo -n env DEMO_DATA_DIR="$SRC_DEMO_DATA" BIN="$REPO/bin/$ARCH" \
+    PYTHON_BIN="$REPO/.demo-venv/bin/python3" ${quick:+DEMO_QUICKSTART=1} \
+    DOCKER_HOST="$DOCKER_HOST" PATH="$PATH" \
+    bash "$REPO/test/demo/demo_e2b.sh"
+}
+
+cmd_src_status(){
+  echo "source root: $SRC_ROOT"
+  local name kind tag dir commit
+  while read -r name kind tag; do
+    dir="$SRC_ROOT/$name"
+    if [ -d "$dir/.git" ]; then
+      commit="$(git -C "$dir" rev-parse --short HEAD 2>/dev/null)"
+      printf '  %-16s %s (%s)\n' "$name" "$tag" "$commit"
+    else
+      printf '  %-16s MISSING\n' "$name"
+    fi
+  done < <(pins)
+  echo "products:    $REPO/bin/$ARCH"
+  if [ -d "$REPO/bin/$ARCH" ]; then
+    src_products | sed 's/^/             /'
+  else
+    echo "             (not built; run: $0 src-build)"
+  fi
+  echo "build inst:  $BUILD_NAME running=$(build_instance_running && echo yes || echo no)"
+}
+
+cmd_src_clean(){
+  # NOTE: the repos' own `make clean` also deletes accelerator/build (librocksdb)
+  # and sandboxer native-deps build (cloud-hypervisor) — forcing a multi-minute
+  # full rebuild. This target therefore removes only the assembled/leaf outputs
+  # by default, keeping the expensive dependency builds cached. For a truly
+  # pristine rebuild, remove the seeds and use: ./demo.sh src-full-clean.
+  if build_instance_running; then
+    log "removing assembled and leaf build outputs (keeping heavy deps)"
+    bexec bash -lc 'set -e
+      rm -rf /src/kuasar-sandbox/bin/x86_64 /src/kuasar-sandbox/bin/.* 2>/dev/null || true
+      find /src/kuasar-sandbox/bin -maxdepth 1 -type l -delete 2>/dev/null || true
+      for d in accelerator sandboxer orchestrator connector; do
+        rm -rf "/src/$d/bin/x86_64"; find "/src/$d/bin" -maxdepth 1 -type l -delete 2>/dev/null || true
+      done
+      rm -f /src/guest-runtime/bin/x86_64/flatten-ctl /src/guest-runtime/bin/x86_64/sandbox-runtime.bundle
+      rm -f /src/guest-runtime/native-deps/bin/x86_64/envd /src/guest-runtime/native-deps/bin/x86_64/mkfs.erofs
+      # Keep the seeded vmlinux (kernel) and staged zot/versitygw helpers.'
+  fi
+  ok "leaf build outputs cleaned (kernel seed, deps and Go/Cargo caches kept)"
+}
+
+cmd_src_full_clean(){
+  if build_instance_running; then
+    log "full clean: removing dependency builds too (next build is cold)"
+    bexec bash -lc 'cd /src/kuasar-sandbox && make clean >/dev/null 2>&1 || true
+      for d in accelerator sandboxer orchestrator connector guest-runtime; do
+        make -C "/src/$d" clean >/dev/null 2>&1 || true
+      done'
+    # Re-seed the code-independent kernel and helper tools.
+    bexec bash -lc "mkdir -p /src/guest-runtime/native-deps/bin/$ARCH" 2>/dev/null || true
+    bexec bash -lc "cp -f /inputs/release/bin/vmlinux /src/guest-runtime/native-deps/bin/$ARCH/vmlinux 2>/dev/null || true" 2>/dev/null || true
+  fi
+  ok "full clean done (kernel/tools re-seeded if available)"
+}
+
+# ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
 cmd_setup(){
@@ -354,7 +585,7 @@ cmd_cleanup(){
   ok "cleanup done"
 }
 
-usage(){ sed -n '3,20p' "$0" | sed 's/^# \{0,1\}//'; }
+usage(){ awk 'NR==1{next} /^# ===/{b++; if(b>1) exit; next} b==1 && /^#/{sub(/^# ?/,""); print}' "$0"; }
 
 case "${1:-}" in
   setup)   cmd_setup;;
@@ -367,6 +598,13 @@ case "${1:-}" in
   stop)    cmd_stop;;
   reset)   cmd_reset;;
   cleanup) cmd_cleanup;;
+  src-clone)  cmd_src_clone;;
+  src-build)  cmd_src_build;;
+  src-demo)   cmd_src_demo "${2:-}";;
+  src-full)   cmd_src_demo "";;
+  src-status) cmd_src_status;;
+  src-clean)  cmd_src_clean;;
+  src-full-clean) cmd_src_full_clean;;
   ''|-h|--help|help) usage;;
   *) usage; exit 2;;
 esac
