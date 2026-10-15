@@ -383,3 +383,4 @@ sudo systemctl disable --now docker-native.service           # 若不再需要�
 - `docs/quickstart.md`、`docs/download.md`、`workbench/README.md`、`test/demo/DEMO.md`
 - 生产部署（本指南不涉及）：`docs/deployment.md`
 - 完整发布验证（更重）：`test/QUICKSTART.md`
+- 六个组件仓库导览（每个仓库做什么、产出什么、文档在哪）：`../README.md`

@@ -326,3 +326,4 @@ rm -rf /home/cyx/Codes/kuasar/kuasar-sandbox/{bin,build,.demo-venv}
 - 官方文档（本仓库内）：`docs/quickstart.md`、`docs/download.md`、`workbench/README.md`、`test/demo/DEMO.md`
 - 版本选择权威来源：`releases/release.yaml`
 - 生产部署（超出本指南范围）：`docs/deployment.md`
+- 六个组件仓库导览（每个仓库做什么、产出什么、文档在哪）：`../README.md`
