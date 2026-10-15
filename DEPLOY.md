@@ -24,14 +24,14 @@ Clash 代理 + 已装 Docker Desktop）编写，目标是**跑通 E2B Demo**，�
 
 | 项 | 值 |
 |---|---|
-| 仓库 | `/home/cyx/Codes/kuasar-sandbox` |
+| 仓库 | `/home/cyx/Codes/kuasar/kuasar-sandbox` |
 | 部署数据根 | `/home/cyx/kuasar-deploy-data`（可用 `KUASAR_DEPLOY_DATA` 覆盖） |
 | 版本 | `release-v0.1.6`（可用 `RELEASE_VERSION` 覆盖） |
 | workbench 镜像 | `ghcr.io/kuasar-sandbox/workbench:v0.1.6` |
 | 原生 Docker socket | `unix:///run/docker-native.sock`（systemd 单元 `docker-native.service`） |
 | workbench 数据目录（容器内） | `/work/kuasar-demo-run` |
 | 资源预算 | 6 CPU / 6 GiB（可用 `WB_CPUS`、`WB_MEMGIB` 覆盖） |
-| 源码根（Path B） | `/home/cyx/Codes`（六个仓库的父目录，`KUASAR_SRC_ROOT` 可覆盖） |
+| 源码根（Path B） | `/home/cyx/Codes/kuasar`（六个仓库的父目录，`KUASAR_SRC_ROOT` 可覆盖） |
 | 源码产物（Path B） | `kuasar-sandbox/bin/x86_64/` |
 | 源码 Demo 数据（Path B） | `/home/cyx/kuasar-deploy-data/kuasar-demo-source` |
 
@@ -66,7 +66,7 @@ DOCKER_HOST=unix:///run/docker-native.sock docker info --format '{{.OperatingSys
 在**本仓库根目录**执行：
 
 ```bash
-cd /home/cyx/Codes/kuasar-sandbox
+cd /home/cyx/Codes/kuasar/kuasar-sandbox
 
 ./demo.sh setup      # 主机准备：passwordless sudo、原生 Docker、ip_forward、出网修复
 ./demo.sh download   # 下载并 SHA-256 校验聚合 Release、解包、导入 workbench 镜像
@@ -126,13 +126,13 @@ Path B 产出你自己的产物（`bin/<arch>/`）。
 ### 4.1 一次性的准备
 
 ```bash
-cd /home/cyx/Codes/kuasar-sandbox
+cd /home/cyx/Codes/kuasar/kuasar-sandbox
 ./demo.sh src-clone    # 在 ../ 下 clone 五个组件仓库（按 release 锁定 tag）
 ./demo.sh src-build    # 从源码构建全部产品（workbench build 模式）
 ./demo.sh src-status   # 查看组件检出与产物
 ```
 
-`src-clone` 会 clone 到 `../`（即 `/home/cyx/Codes/`），与 `kuasar-sandbox` 同级
+`src-clone` 会 clone 到 `../`（即 `/home/cyx/Codes/kuasar/`），与 `kuasar-sandbox` 同级
 ——这正是 `Makefile` 里 `ORG := $(CURDIR)/..` 的约定。锁定 tag 来自本仓库的
 `releases/release.yaml`：
 
@@ -149,7 +149,7 @@ cd /home/cyx/Codes/kuasar-sandbox
 
 ### 4.2 编译在哪发生：workbench build 模式
 
-`src-build` 用一个 **workbench `--mode build`** 实例：把 `/home/cyx/Codes`（六个
+`src-build` 用一个 **workbench `--mode build`** 实例：把 `/home/cyx/Codes/kuasar`（六个
 仓库的父目录）只读挂载到 `/src`，容器内自带 Go 1.26 / Rust/Cargo / clang / mkfs.erofs，
 以你的 UID 运行、去掉所有权限、只读根文件系统。构建产物写回 `bin/<arch>/` 和各仓库的
 `bin/`（因为 `/src` 是可写的 bind mount）。这避免在主机上安装整套工具链。
@@ -201,9 +201,9 @@ guest-runtime/native-deps → accelerator → sandboxer → guest-runtime
 ### 4.5 改代码 → 重建 → 再跑（这就是你要的循环）
 
 ```bash
-cd /home/cyx/Codes/orchestrator       # 或 accelerator / sandboxer / connector / guest-runtime
+cd /home/cyx/Codes/kuasar/orchestrator       # 或 accelerator / sandboxer / connector / guest-runtime
 $EDITOR cmd/node-ctl/main.go          # 改代码
-cd /home/cyx/Codes/kuasar-sandbox
+cd /home/cyx/Codes/kuasar/kuasar-sandbox
 ./demo.sh src-build                   # 增量重建（只重编变更的仓库/包）
 ./demo.sh src-demo quick              # 用新产物再跑一遍
 ```
@@ -214,7 +214,7 @@ cd /home/cyx/Codes/kuasar-sandbox
 各仓库就是普通 git 检出（默认在锁定 tag 的 detached HEAD）。要改代码建议建分支：
 
 ```bash
-cd /home/cyx/Codes/orchestrator && git switch -c my/change
+cd /home/cyx/Codes/kuasar/orchestrator && git switch -c my/change
 ```
 
 ### 4.6 清理
@@ -351,7 +351,7 @@ Path B 的 `./demo.sh src-demo quick` / `src-full` 输出与上面完全一致�
 ## 8. 清理与回滚
 
 ```bash
-cd /home/cyx/Codes/kuasar-sandbox
+cd /home/cyx/Codes/kuasar/kuasar-sandbox
 ./demo.sh cleanup                                   # 停并删 workbench 容器（保留 work/output）
 
 # 可选：彻底移除

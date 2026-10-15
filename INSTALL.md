@@ -95,7 +95,7 @@ cat /sys/fs/cgroup/cgroup.controllers
 所有命令在仓库根目录执行：
 
 ```bash
-cd /home/cyx/Codes/kuasar-sandbox
+cd /home/cyx/Codes/kuasar/kuasar-sandbox
 
 # 步骤 1：宿主准备（幂等）——原生 Docker、免密 sudo、ip_forward、出网修复
 ./demo.sh setup
@@ -163,7 +163,7 @@ Demo 的 prepare/run 使用 `sudo -n`，且 `prepared.py` 要求 `euid==0`。
 ## 4. 安装后的日常使用
 
 ```bash
-cd /home/cyx/Codes/kuasar-sandbox
+cd /home/cyx/Codes/kuasar/kuasar-sandbox
 
 ./demo.sh status   # 查看 数据根/版本/镜像/实例/容器/出网规则/ip_forward
 ./demo.sh quick    # 重跑短 Demo（会自动重启实例并停掉旧存储层）
@@ -191,7 +191,7 @@ python3 /home/cyx/kuasar-deploy-data/release-v0.1.6/workbench/workbench \
 ### 5.1 一次性准备
 
 ```bash
-cd /home/cyx/Codes/kuasar-sandbox
+cd /home/cyx/Codes/kuasar/kuasar-sandbox
 ./demo.sh src-clone   # 在 ../ 下 clone 上述五个组件仓库（按锁定 tag）
 ./demo.sh src-build   # 从源码构建全部产品 → bin/x86_64/
 ./demo.sh src-status  # 查看组件检出与产物
@@ -200,12 +200,12 @@ cd /home/cyx/Codes/kuasar-sandbox
 源码目录结构（`Makefile` 的 `ORG := $(CURDIR)/..` 约定）：
 
 ```
-/home/cyx/Codes/
+/home/cyx/Codes/kuasar/
 ├── kuasar-sandbox/   ← 本仓库（构建入口）
 ├── orchestrator/  sandboxer/  accelerator/  connector/  guest-runtime/
 ```
 
-`src-build` 在 **workbench `--mode build`** 实例里编译（把 `/home/cyx/Codes` 挂到 `/src`，
+`src-build` 在 **workbench `--mode build`** 实例里编译（把 `/home/cyx/Codes/kuasar` 挂到 `/src`，
 容器自带 Go 1.26 / Rust / clang / mkfs.erofs），因此宿主**无需**安装整套工具链。
 冷构建本机约 **30–40 分钟**（主要是 Rust 的 cloud-hypervisor 与 C++ 的 librocksdb）。
 
@@ -224,8 +224,8 @@ cd /home/cyx/Codes/kuasar-sandbox
 ./demo.sh src-full         # 对源码产物跑完整 Demo
 
 # 改代码 → 重建 → 再跑
-cd /home/cyx/Codes/orchestrator && git switch -c my/change && $EDITOR ...
-cd /home/cyx/Codes/kuasar-sandbox
+cd /home/cyx/Codes/kuasar/orchestrator && git switch -c my/change && $EDITOR ...
+cd /home/cyx/Codes/kuasar/kuasar-sandbox
 ./demo.sh src-build        # 增量重建（实测单仓库改动约 11 秒）
 ./demo.sh src-demo quick
 ```
@@ -289,7 +289,7 @@ cd /home/cyx/Codes/kuasar-sandbox
 ## 8. 卸载 / 回滚
 
 ```bash
-cd /home/cyx/Codes/kuasar-sandbox
+cd /home/cyx/Codes/kuasar/kuasar-sandbox
 ./demo.sh cleanup                                          # 停并删 workbench 容器（保留 work/output）
 
 # 可选：彻底移除
@@ -299,8 +299,8 @@ sudo rm -f /etc/sudoers.d/90-cyx-nopasswd
 sudo iptables -t nat -D PREROUTING -d 1.1.1.1 -p tcp --dport 80 -j DNAT --to-destination 1.0.0.1:80
 sudo systemctl disable --now docker-native.service          # 若不再需要原生引擎
 # 方式 B 追加：删除源码目录与产物
-sudo rm -rf /home/cyx/Codes/{orchestrator,sandboxer,accelerator,connector,guest-runtime}
-rm -rf /home/cyx/Codes/kuasar-sandbox/{bin,build,.demo-venv}
+sudo rm -rf /home/cyx/Codes/kuasar/{orchestrator,sandboxer,accelerator,connector,guest-runtime}
+rm -rf /home/cyx/Codes/kuasar/kuasar-sandbox/{bin,build,.demo-venv}
 ```
 
 ---

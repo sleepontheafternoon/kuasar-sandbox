@@ -305,20 +305,50 @@ build_instance_running(){
   [ "$(docker inspect -f '{{.State.Running}}' "kuasar-workbench-$BUILD_NAME" 2>/dev/null)" = true ]
 }
 
+# Echo the host path currently mounted at /src, or nothing if no instance.
+build_instance_source(){
+  docker inspect "kuasar-workbench-$BUILD_NAME" \
+    --format '{{range .Mounts}}{{if eq .Destination "/src"}}{{.Source}}{{end}}{{end}}' 2>/dev/null
+}
+
 src_build_instance_up(){
   need_release
-  if build_instance_running; then ok "build instance already running"; return 0; fi
-  if docker inspect "kuasar-workbench-$BUILD_NAME" >/dev/null 2>&1; then
-    log "restarting build instance"
-    python3 "$WB" --root "$BUILD_STATE" --name "$BUILD_NAME" start \
-      --image "$IMAGE" --mode build --source "$SRC_ROOT" --cpus "${BUILD_CPUS:-4}" --memory-gib "${BUILD_MEMGIB:-6}"
-    return 0
+  local container="kuasar-workbench-$BUILD_NAME" mounted instdir="$BUILD_STATE/$BUILD_NAME"
+  if docker inspect "$container" >/dev/null 2>&1 && build_instance_running; then
+    mounted="$(build_instance_source)"
+    [ "$mounted" = "$SRC_ROOT" ] && { ok "build instance already running"; return 0; }
+    log "source root changed ($mounted -> $SRC_ROOT); recreating build instance"
+  fi
+  # workbench ties an instance to (name, state dir, source dir, image). To point it
+  # at a relocated source root we must retire the old instance and create a fresh
+  # one; workbench only adopts an empty instance dir. Preserve the Go/Cargo caches
+  # (HOME under <instdir>/home) so the next build does not re-download modules.
+  if docker inspect "$container" >/dev/null 2>&1; then
+    build_instance_running && python3 "$WB" --root "$BUILD_STATE" --name "$BUILD_NAME" stop >/dev/null 2>&1 || true
+    python3 "$WB" --root "$BUILD_STATE" --name "$BUILD_NAME" cleanup >/dev/null 2>&1 || true
+    docker inspect "$container" >/dev/null 2>&1 && docker rm -f "$container" >/dev/null 2>&1 || true
+  fi
+  if [ -e "$instdir" ]; then
+    local prev="$BUILD_STATE/.build.prev.$$"
+    log "retiring old instance dir (preserving module caches)"
+    mv "$instdir" "$prev"
+    mkdir -p "$BUILD_STATE" "$instdir"
+    # fresh instance needs an empty dir; restore caches after it starts (below)
+    # so keep them staged in $prev.
+    RESTORE_HOME="$prev/home"
   fi
   log "creating build instance (source=$SRC_ROOT)"
   mkdir -p "$BUILD_STATE"; chmod 700 "$BUILD_STATE"
+  rmdir "$instdir" 2>/dev/null || true
   python3 "$WB" --root "$BUILD_STATE" --name "$BUILD_NAME" start \
     --image "$IMAGE" --mode build --source "$SRC_ROOT" --cpus "${BUILD_CPUS:-4}" --memory-gib "${BUILD_MEMGIB:-6}"
   printf '%s\n' "$BUILD_NAME" >"$BUILD_NAME_FILE"
+  if [ -n "${RESTORE_HOME:-}" ] && [ -d "$RESTORE_HOME" ]; then
+    log "restoring Go/Cargo caches"
+    cp -a "$RESTORE_HOME/." "$instdir/home/" 2>/dev/null || true
+    rm -rf "$(dirname "$RESTORE_HOME")"
+    unset RESTORE_HOME
+  fi
 }
 
 bexec(){ python3 "$WB" --root "$BUILD_STATE" --name "$BUILD_NAME" exec -- "$@"; }
