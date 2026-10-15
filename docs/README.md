@@ -14,6 +14,7 @@
 ## System and component contracts
 
 - [System overview](kuasar-sandbox.md): user semantics and the five component boundaries.
+- [Manifest data flow](manifest-data-flow.md): how an image becomes a Manifest template, and how data flows (flatten → ingest → fetch), with key code.
 - [Terminology](terminology.md): concise cross-component vocabulary; detailed field semantics remain with their owners.
 - [orchestrator](https://github.com/kuasar-sandbox/orchestrator/blob/main/README.md#documentation): node lifecycle, Build, resource control, Registry, Router, Placer and extensions.
 - [sandboxer](https://github.com/kuasar-sandbox/sandboxer/blob/main/README.md#documentation): runtime lifecycle, portable artifacts, Guest ABI and VMM integration.
