@@ -250,6 +250,8 @@ See [docs/release.md](docs/release.md) for the full asset contract, trust bounda
 - [Architecture](docs/kuasar-sandbox.md) — system goals, architecture, lifecycle, storage, resource, network, and security semantics;
 - [Deployment](docs/deployment.md) — standalone and cluster topology, processes, ports, persistent paths, and startup dependencies;
 - [Performance](docs/perf.md) — performance baselines with test context, regression gates, and tuning methods;
+- [Manifest data flow](docs/manifest-data-flow.md) — how an image becomes a Manifest template and how data moves (flatten → ingest → fetch), with the key code;
+- [Manifest code guide](docs/manifest-code-guide.md) — the same path as code: `accelerator/pkg/manifest` package layout, binary format, references, storage backends and CLI;
 - [CI](docs/ci.md) — Integration E2E, source selection, native caches, and release asset validation;
 - [Releases](docs/release.md) — component versions, aggregate selection, assets, and release transactions;
 - [Quick Start](docs/quickstart.md) — the shortest path from an aggregate release to a real MicroVM;
