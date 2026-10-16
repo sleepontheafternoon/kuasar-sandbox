@@ -14,6 +14,8 @@
 ## 系统与组件契约
 
 - [系统总览](kuasar-sandbox_zh.md)：用户语义与五个组件的职责边界。
+- [Manifest 数据流](manifest-data-flow.md)：镜像如何变成 Manifest 模板，数据如何流动（flatten → ingest → fetch），并附关键代码。
+- [Manifest 代码导览](manifest-code-guide.md)：同一条链路从代码看——`accelerator/pkg/manifest` 的包布局、二进制形态、引用格式、存储后端与 CLI。
 - [术语](terminology_zh.md)：跨组件词汇速查；精确字段语义由所属组件定义。
 - [orchestrator](https://github.com/kuasar-sandbox/orchestrator/blob/main/README_zh.md#文档)：节点生命周期、Build、资源控制、Registry、Router、Placer 与扩展。
 - [sandboxer](https://github.com/kuasar-sandbox/sandboxer/blob/main/README_zh.md#文档)：运行生命周期、便携工件、Guest ABI 与 VMM 集成。

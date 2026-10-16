@@ -217,6 +217,26 @@ Runtime files are collected into `bin/<arch>/` according to [`release/bin-inputs
 GOWORK=off make -C sandboxer build
 ```
 
+### Checking out the components for a source build
+
+`make build` consumes the five component checkouts as **sibling directories** of this repository (`ORG := $(CURDIR)/..`) and compiles whatever is on disk; it does not read Git remotes. The `demo.sh` launcher can bootstrap those checkouts once:
+
+```bash
+# From the project repository root. Clones accelerator, connector, guest-runtime,
+# sandboxer and orchestrator into ../ at the pins in releases/release.yaml.
+./demo.sh src-clone
+./demo.sh src-build        # builds every product from those checkouts
+./demo.sh src-demo quick   # runs the Demo against the source-built binaries
+```
+
+`src-clone` is a **one-time bootstrap**, not part of the edit/build loop:
+
+- It clones `https://github.com/kuasar-sandbox/<name>.git` at the pinned tags. The upstream organization and the pins are hard-coded in `demo.sh`, so it does not clone your own fork and cannot be used to fetch your branches. A fork workflow prepares the same six sibling directories manually with `origin` set to your fork and `upstream` set to `kuasar-sandbox`, then goes straight to `src-build`.
+- It skips any component whose directory already contains `.git`, so re-running it never refreshes or overwrites an existing tree.
+- `src-build` recompiles the sibling checkouts in place, and `src-clean`/`src-full-clean` remove only build outputs. Neither touches your committed edits or your working branches.
+
+This mirrors the build entry in the [Workbench guide](workbench/README.md#build-with-an-ordinary-uid), which starts the same build from an explicit `--source` parent directory.
+
 Product E2E consumes prebuilt products through `test/e2e/e2e prepare` and `run`. Full `<suite>.<case>.sh` filenames identify cases across nine suites; component ownership only determines where source cases are maintained. Preparation acquires immutable images and the pinned Demo SDK; execution uses prepared products, helpers and images without source discovery, compilation or automatic pulls. Unit/race/vet, UFFD and performance gates stay independent. See [test organization](test/README.md) and the [release validation guide](test/QUICKSTART.md).
 
 Release-tool tests do not contact GitHub or build the real native dependencies:
@@ -250,6 +270,8 @@ See [docs/release.md](docs/release.md) for the full asset contract, trust bounda
 - [Architecture](docs/kuasar-sandbox.md) — system goals, architecture, lifecycle, storage, resource, network, and security semantics;
 - [Deployment](docs/deployment.md) — standalone and cluster topology, processes, ports, persistent paths, and startup dependencies;
 - [Performance](docs/perf.md) — performance baselines with test context, regression gates, and tuning methods;
+- [Manifest data flow](docs/manifest-data-flow.md) — how an image becomes a Manifest template and how data moves (flatten → ingest → fetch), with the key code;
+- [Manifest code guide](docs/manifest-code-guide.md) — the same path as code: `accelerator/pkg/manifest` package layout, binary format, references, storage backends and CLI;
 - [CI](docs/ci.md) — Integration E2E, source selection, native caches, and release asset validation;
 - [Releases](docs/release.md) — component versions, aggregate selection, assets, and release transactions;
 - [Quick Start](docs/quickstart.md) — the shortest path from an aggregate release to a real MicroVM;

@@ -10,6 +10,8 @@
 > 权威定义在组件仓库文档:`accelerator/docs/manifest.md`(Manifest 与内容寻址)、
 > `accelerator/docs/store.md`(存储)、`accelerator/docs/cache.md`(缓存)、
 > `guest-runtime/docs/flatten.md`(镜像展平)、`orchestrator/docs/node-build.md`(构建)。
+> 配套阅读:[manifest-code-guide.md](manifest-code-guide.md) 从**代码结构**角度逐子包讲解
+> `accelerator/pkg/manifest`(包布局、二进制形态、引用格式、存储后端、CLI)。
 > 本文是"把这些串起来看一遍"的整合视图。
 
 ---
@@ -70,6 +72,128 @@ flatten-ctl export --upload --manifest-config manifest.yaml --config flatten.yam
 - EROFS **只读且不可变**,与 Manifest 的分块/内容键寻址天然契合。
 - 展平强调**确定性**(`-T0 --ignore-mtime` 等):同样的源 + 工具 + 配置 ⇒
   **逐字节相同的 payload** ⇒ 同样的分块 ⇒ 同样的 content key ⇒ 去重与模板 ID 可复现。
+
+#### 实现:这一步在代码里到底做了什么
+
+`flatten-ctl` 只是薄壳;真正的逻辑在 **accelerator** 仓库
+(`accelerator/pkg/{remote,flatten,image}`),guest-runtime 通过 `go.mod` 依赖它。
+
+```
+guest-runtime/cmd/flatten-ctl/main.go     CLI 外壳:参数解析、输入分类、打包 artifact
+   └── accelerator/pkg/remote             拉取(pull)
+   └── accelerator/pkg/flatten            合并层 + 生成 EROFS
+   └── accelerator/pkg/image              EROFS superblock / 追加 config ZIP
+   └── accelerator/pkg/manifest           摄入(ingest,见 §5)
+```
+
+`runRemoteFlatten` 是 registry 源的入口:
+
+```go
+res, _ := cfg.Resolve(ctx, ref)        // 解析引用,选平台,钉死不可变 digest
+cache, cleanup, _ := cfg.OpenCache()   // 本地 OCI-layer 缓存
+src, _ := cfg.Pull(ctx, res, cache)    // 拉取各层(命中的走缓存)
+flatten.Build(src, outputPath, opts)   // 合并 + EROFS + 内嵌 config
+```
+
+**① 解析引用并钉死版本**(`remote.Resolve`)。包注释说明了原因:
+
+> Resolve parses ref, contacts the registry, selects the configured platform
+> from an index (or takes the single manifest), and returns the pinned
+> image-manifest digest. Resolving a moving tag here is what lets callers
+> print and persist an immutable **repo@sha256** for reproducibility.
+
+即 `python:3.12-slim`(会移动的 tag)先变成 `repo@sha256:<digest>`,之后一切基于该 digest
+——这是"确定性"的起点,也是日志里 `resolved: …@sha256:139b14…` 的来源。
+
+**② 拉取各层**(`remote.Pull`),三段式:
+
+```go
+// Pass 1: 先探每层 digest,查明哪些是缓存未命中(进度分母只算未命中)
+for i, l := range layers { d, _ := l.Digest(); if !cache.Has(d) { misses = append(misses, i) } }
+// Pass 2: 并发下载未命中的层,并发度 = PullJobs
+sem := make(chan struct{}, c.pullJobs())
+// 每层落本地内容寻址缓存;应用时再 decompress(gzip 层)
+```
+
+**③ 合并层**(`flatten.Build` 的 Step 1 → `applyLayerTar`)。**不是 overlay 挂载**,
+而是按顺序把每层 tar 写进同一个 rootfs 目录,并实现 OCI 白化语义:
+
+```go
+name := filepath.Clean(hdr.Name); base := filepath.Base(name)
+
+// 不透明白化(.wh..wh..opq):清空整个目录
+if base == ".wh..wh..opq" { clearDirectory(filepath.Join(rootfsDir, dir)); continue }
+// 文件白化(.wh.<name>):删除该条目
+if strings.HasPrefix(base, ".wh.") {
+    os.RemoveAll(filepath.Join(rootfsDir, dir, strings.TrimPrefix(base, ".wh."))); continue
+}
+```
+
+按 `Typeflag` 落地:目录 `MkdirAll`;普通文件**先 `os.Remove(target)` 再写**(上层覆盖下层);
+软链/硬链同理。属主与权限经 `applyOwnerMode` 保留,原因见其注释:
+
+> Preserving the image's real uid/gid requires root (**CAP_CHOWN**) ... e.g. `/tmp`
+> stays 1777 and `/home/<user>` stays user-owned, so a non-root guest user can
+> write to its home.
+
+所以 `runExport` 在**拉取前**就先检查权限,避免"拉了几分钟才在 chown 处失败":
+
+```go
+if !dirSrc { if err := flatten.RequireOwnershipCap(); err != nil { return err } }
+```
+
+**④ 确定性归一化**(`normalizeTimestamps`):把所有 mtime 抹到 epoch,软链跳过。
+
+```go
+epoch := unixEpoch
+filepath.Walk(rootfsDir, func(path string, info os.FileInfo, err error) error {
+    if info.Mode()&os.ModeSymlink != 0 { return nil }   // Chtimes 会跟随软链,故跳过
+    return os.Chtimes(path, epoch, epoch)
+})
+```
+
+**⑤ 生成确定性 EROFS**(`buildEROFS` → `mkfs.erofs`),参数各有其意:
+
+```go
+args := []string{
+    "-Ededupe",                                   // 镜像内文件去重
+    "--chunksize=4096",                           // 分块布局:元数据 7.6MiB→0.6MiB,稳定数据块偏移
+    "-T0",                                        // 固定时间戳(epoch)
+    "-b4096", "-x-1",                             // 4K 块;关闭 xattr
+    "-U", "00000000-0000-0000-0000-000000000000", // 固定 UUID
+    "--quiet",
+}
+```
+
+注意:**不启用压缩**(注释:*No compression: raw bytes enable CDC dedup*)。
+因为 manifest 层要按内容寻址去重,压缩会引入实现差异、破坏"同内容 ⇒ 同字节"。
+
+**⑥ 内嵌 OCI 运行时配置**(Step 4):`image.AppendConfigZip` 把 config 投影成
+**STORED-mode(不压缩)ZIP**,追加在 EROFS 之后。注释解释了为何可行:
+
+> EROFS mount/read remains correct because the EROFS image's extent is described
+> in its superblock; the ZIP trailer is addressable independently.
+
+**⑦ 打包成 tarstream artifact**(`packImageArtifact`)。每次 export 都先写一个**裸 EROFS**
+scratch 文件(`mkfs.erofs` 需要可寻址输出),然后:
+
+```go
+holes, _ := sparse.ProbeHoles(f)                  // 探测 EROFS 的稀疏洞
+src, _ := sparse.NewSource(f, size, holes)        // 带洞的稀疏源
+tail, boundary, _ := tailzip.Read(f, size, ...)   // 读回刚追加的 config ZIP
+// 用 tarstream 把 "EROFS + 尾部 ZIP" 写成条目名 "image" 的载体
+tarstream.WriteTo(ctx, w, "image", src)
+```
+
+**这里的关键衔接**:`sparse.ProbeHoles` 探测出的洞,会一路传递到 §5 的 ingest
+——变成 Manifest 的 **Hole 表**,于是"展平后镜像里的空洞"在存储层"不读也不存"。
+
+产物形态与日志对应:
+
+```
+[ EROFS 文件系统 ][ appended STORED ZIP(config.json) ]   ← 打包为 tarstream(payload "image")
+· EROFS image: 118.0 MiB                                  ← 裸 EROFS 大小(runExport 打印)
+```
 
 ### 1.2 第 2 步 —— 摄入为 Manifest:`manifest-ctl store`
 
@@ -343,6 +467,88 @@ res.ManifestKey = manifestKey                          // 就是对外句柄
 - `SealKeyTable` 用**客户密钥 AES-GCM** 封装"非零块的密钥表",AAD 绑定 Manifest 结构(`BuildAAD`)——**密钥表被篡改会解封失败**。
 - Manifest 自身也是内容寻址对象:`manifestKey = SHA256(物理信封)`,与块用同一套寻址。
 - 调用者**永远看不到序列化字节**,只拿到 `ManifestKey`。
+
+### 5.6 五个环节:分块 → 收敛加密 → 去重 → 存 chunk → Marshal Manifest
+
+把 §5.1–§5.5 压成一条线,逐环节对应到代码:
+
+```
+sparse.Source ──① 分块──▶ Chunk ──② 收敛加密──▶ 密文对象
+                                     │
+                    ③ 去重(ContentKey 已存在?)
+                                     │
+                          ④ store.Put(chunk 分区)
+                                     │
+                    ⑤ Marshal Manifest → store.Put(manifest 分区) → ManifestKey
+```
+
+**① 分块(`chunker.Chunker`)**
+
+```go
+type Chunker interface {
+    Chunk(r io.Reader, cb Callback) error
+    Info() Info
+}
+type ChunkResult struct { Offset uint64; Size uint32; Data []byte; IsZero bool }
+```
+
+- 两种模式:`cdc`(FastCDC,默认)或 `fixed`;由 `chunker.mode` 选。
+- FastCDC 用 **Gear 滚动哈希**找边界:`hash = (hash << 1) + gearTable[b]`,配
+  `min/avg/max`(默认 128K/512K/1M)和**非对称归一化掩码**(phase-1 抑制早切、phase-2 抑制强制切)。
+- **普通源**返回 `Data`;**全零段**返回 `IsZero=true`(由 ingest 合成零字节喂入,不 `ReadAt`)。
+- 洞**不经过 chunker**:ingest 主循环遇到 `sparse.Hole` 直接记洞表并跳过(见 §5.2)。
+
+**② 收敛加密(`crypto.AESChunkEncryptor.EncryptChunk`)**
+
+```go
+ciphertext, hash, key, err := i.enc.EncryptChunk(ctx, salt, data)
+```
+
+```go
+// crypto/convergent.go —— 密钥由 salt+明文派生(不是客户密钥!)
+func DeriveKey(salt [32]byte, plaintext []byte) [32]byte {
+    h := sha256.New(); h.Write(salt[:]); h.Write(plaintext); return ...
+}
+```
+
+```go
+// crypto/aes.go —— 选编码、派生密钥、加密、算物理哈希
+format, payload := ChunkFormatAESRaw, plaintext
+if compressionBeneficial(uint64(len(plaintext)), uint64(len(encoded))) {
+    format, payload = ChunkFormatAESSnappy, encoded      // 仅当 CompressionBeneficial:省≥4KiB 且编码≤75%
+}
+key := DeriveKey(salt, plaintext)
+object := make([]byte, 1+len(payload)); object[0] = format
+cipher.NewCTR(block, iv[:]).XORKeyStream(object[1:], payload)
+hash := sha256.Sum256(object)                            // 物理对象哈希
+```
+
+物理对象:`0x01 || AES-256-CTR(key, IV=0, plaintext)` 或 `0x02 || …(snappy)`。
+
+**③ 去重**:不是"先算再查表",而是直接用 `hash` 当 key 去 `Put`;由 store 判定是否已存在
+(内容寻址 + generation 作用域)。`Put` 返回 `isNew`:
+
+```go
+ck := store.ContentKey(hash)
+isNew, err := i.store.Put(ctx, admission, store.PartitionChunk, ck, ciphertext)
+// isNew == false ⇒ 命中已有对象,服务端跳过上传 body
+```
+
+去重的**前提**是收敛加密:同明文 + 同 salt ⇒ 同密文 ⇒ 同 `ContentKey`(见 §9)。
+
+**④ 存 chunk**(`store.Put`,`PartitionChunk`):对象落在
+`<root>/chunk/<generation>/<hex前2>/<hex第3-4>/<完整hex>`(见 §8)。
+可选能力 `OrderedChunkStoreWriter.PutChunkOrdered(ordinal)` 让本地串行 writer 按**镜像顺序**追加。
+
+**⑤ Marshal Manifest**(§5.4–§5.5):索引**按文件顺序**组装(与并发完成顺序无关),封 key 表,
+`codec.Marshal` 成信封,再以 `manifestKey = SHA256(物理信封)` 写入 `PartitionManifest`;
+返回的 `ManifestKey` 就是 `manifest://<hex>`。
+
+**为什么这个顺序是刚性的**:`分块`决定去重粒度 → `收敛加密`让去重成为可能 →
+`去重`减少物理写入 → `存 chunk`固定寻址 → `Marshal`把"块列表 + 密钥表"固化成可复现的句柄。
+任何一步不"确定",最终 key 都会漂移,去重与模板 ID 稳定性随之失效。
+
+---
 
 ## 6. Manifest 对象的二进制形态(`codec/manifest.go`)
 

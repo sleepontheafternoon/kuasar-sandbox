@@ -209,6 +209,11 @@ cd /home/cyx/Codes/kuasar/kuasar-sandbox
 容器自带 Go 1.26 / Rust / clang / mkfs.erofs），因此宿主**无需**安装整套工具链。
 冷构建本机约 **30–40 分钟**（主要是 Rust 的 cloud-hypervisor 与 C++ 的 librocksdb）。
 
+> **关于 fork**：`src-clone` 只是一次性引导，硬编码官方 URL 与锁定 tag，**不认你的 fork**；
+> 目录已存在时会直接跳过，不会刷新或覆盖。若你在自己的 fork 分支上改代码，请自己把六个
+> 兄弟目录的 `origin` 指到 fork、`upstream` 指到 `kuasar-sandbox`，然后直接 `src-build`——
+> 构建只编译 `../` 下的源码，不看 remote。详见 `DEPLOY.md` §4.1。
+
 ### 5.2 构建期的三处本机适配（`src-build` 已自动处理）
 
 1. **Go 模块**：直连 `proxy.golang.org` 在本机超时 → 设为 `GOPROXY=https://goproxy.cn,direct`。

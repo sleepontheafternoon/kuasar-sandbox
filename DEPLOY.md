@@ -147,6 +147,34 @@ cd /home/cyx/Codes/kuasar/kuasar-sandbox
 注意 **connector 是 `v0.1.5`**，不是 v0.1.6——聚合版本里各组件版本不等，务必按
 `releases/release.yaml` 来，不要想当然。
 
+#### `src-clone` 的作用与边界（重要）
+
+`src-clone` 只是**一次性引导**，不是"改代码 → 重建"循环的一环：
+
+- **它不认 fork。** URL 硬编码为 `https://github.com/kuasar-sandbox/<name>.git`（`demo.sh:387`），
+  且按锁定 tag 克隆；fork 默认不继承 tag。所以在你自己的 fork 上改代码时，**不要再跑 `src-clone`**
+  ——它要么跳过（目录已存在）、要么把官方版本重新拉一遍。
+- **它不会刷新已有检出。** 只要 `<name>/.git` 存在就打印 `already cloned` 直接跳过，不会覆盖你的改动。
+- **构建不读 remote。** `make build` 直接编译 `../` 下的兄弟目录，你在 fork 分支上的改动，
+  只要落在这五个目录里，`src-build` 就会编进去。
+- **清理不动源码。** `src-clean` / `src-full-clean` 只删构建产物，保留检出。
+
+**Fork 工作流**：自己准备六个兄弟目录，`origin` = 你的 fork、`upstream` = `kuasar-sandbox`，
+拉取你的分支后直接 `src-build`：
+
+```bash
+cd /home/cyx/Codes/kuasar
+for name in accelerator connector guest-runtime orchestrator sandboxer kuasar-sandbox; do
+  git -C "$name" remote rename origin upstream   # 官方 -> upstream
+  git -C "$name" remote add origin "git@github.com:<you>/$name.git"
+  git -C "$name" fetch --unshallow --tags origin
+  git -C "$name" checkout -B my-dev --track origin/main   # 在 fork 的 main 上开工作分支
+done
+cd kuasar-sandbox && ./demo.sh src-build
+```
+
+（`kuasar-sandbox` 这个目录若已有分支和未提交改动，只切 remote，不要 `checkout -B`。）
+
 ### 4.2 编译在哪发生：workbench build 模式
 
 `src-build` 用一个 **workbench `--mode build`** 实例：把 `/home/cyx/Codes/kuasar`（六个

@@ -251,6 +251,32 @@ make -C kuasar-sandbox demo PYTHON_BIN=/absolute/path/to/pinned-venv/bin/python
 GOWORK=off make -C sandboxer build
 ```
 
+### 准备源码构建所需的组件检出
+
+`make build` 把五个组件仓当作本仓的**兄弟目录**(`ORG := $(CURDIR)/..`)直接编译磁盘上的源码,
+不读取 Git remote。`demo.sh` 可以一次性把检出准备好:
+
+```bash
+# 在项目仓根目录执行。按 releases/release.yaml 的锁定 tag 把 accelerator、connector、
+# guest-runtime、sandboxer、orchestrator 克隆到 ../ 下。
+./demo.sh src-clone
+./demo.sh src-build        # 从这些检出构建全部产品
+./demo.sh src-demo quick   # 用源码产物跑 Demo
+```
+
+`src-clone` 是**一次性的引导步骤**,不属于"改代码→重建"循环:
+
+- 它按锁定 tag 克隆 `https://github.com/kuasar-sandbox/<name>.git`。上游组织和 tag 在
+  `demo.sh` 中硬编码,所以它**不会**克隆你自己的 fork,也不能用它拉取你的分支。fork 工作流
+  请自行准备同样的六个兄弟目录:把 `origin` 设成你的 fork,`upstream` 设成 `kuasar-sandbox`,
+  然后直接跑 `src-build`。
+- 只要组件目录里已有 `.git`,它就会跳过该组件,因此重复执行**不会**刷新或覆盖已有检出。
+- `src-build` 就地重编兄弟目录;`src-clean`/`src-full-clean` 只删构建产物。两者都不会动你已提交
+  的改动或工作分支。
+
+这与 [Workbench 指南](workbench/README_zh.md#使用普通-uid-构建) 中的构建入口一致——那里也从显式的
+`--source` 父目录启动同一套构建。
+
 本地发布工具测试不访问 GitHub,也不构建真实 native 依赖:
 
 ```bash
@@ -287,6 +313,8 @@ make -C kuasar-sandbox test-perf-tools
 - [Architecture](docs/kuasar-sandbox_zh.md):系统目标,架构和关键语义;
 - [Deployment](docs/deployment_zh.md):部署拓扑,进程,端口与启停依赖;
 - [Performance](docs/perf_zh.md):带测试上下文的性能基线,回归门禁与调优方法;
+- [Manifest 数据流](docs/manifest-data-flow.md):镜像如何变成 Manifest 模板,数据如何流动(flatten → ingest → fetch),并附关键代码;
+- [Manifest 代码导览](docs/manifest-code-guide.md):同一条链路的代码视角——`accelerator/pkg/manifest` 的包布局、二进制形态、引用格式、存储后端与 CLI;
 - [CI](docs/ci_zh.md):端到端集成测试,缓存,候选 revision 和发行资产验证;
 - [Releases](docs/release_zh.md):组件版本,聚合选择,资产与发布事务;
 - [快速开始](docs/quickstart_zh.md):从聚合 Release 到真实 MicroVM 的首次使用路径;

@@ -22,13 +22,28 @@
 #   ./demo.sh cleanup    # stop + remove workbench container/image artifacts
 #
 # Path B (source build; for changing component code) — see DEPLOY.md "Path B":
-#   ./demo.sh src-clone  # clone/refresh the 5 component repos at pinned tags
+#   ./demo.sh src-clone  # FIRST RUN ONLY: clone the 5 component repos at pinned tags
 #   ./demo.sh src-build  # build all products from source (workbench build mode)
 #   ./demo.sh src-demo [quick]  # run the Demo against source-built binaries
 #   ./demo.sh src-full  # full source-build Demo (fan-out + migration)
 #   ./demo.sh src-status # show component checkouts + source-built products
 #   ./demo.sh src-clean  # remove leaf build outputs (keeps deps + caches)
 #   ./demo.sh src-full-clean # remove dependency builds too (next build is cold)
+#
+# src-clone is a one-time bootstrap, NOT part of the edit/build loop:
+#   * It clones from https://github.com/kuasar-sandbox/<name>.git at the release
+#     pins in releases/release.yaml (see `pins()`); it hard-codes the upstream org
+#     and the pinned tags, so it does NOT clone your own fork and will not fetch
+#     your branches. For a fork workflow, set up the six sibling checkouts
+#     yourself with `origin` = your fork and `upstream` = kuasar-sandbox, then go
+#     straight to src-build.
+#   * It SKIPS any component whose directory already has a .git (printing
+#     "already cloned"), so it never refreshes or overwrites an existing tree.
+#   * `make build` (and therefore src-build) compiles the sibling checkouts under
+#     $KUASAR_SRC_ROOT directly (Makefile ORG := $(CURDIR)/..); it does not read
+#     Git remotes. Editing your fork's branches and re-running src-build is enough.
+#   * `src-clean`/`src-full-clean` only delete build outputs; they never touch the
+#     checkouts, so your edits survive.
 #
 # See DEPLOY.md for the full explanation, prerequisites and troubleshooting.
 # =============================================================================
@@ -346,7 +361,12 @@ src_build_instance_up(){
   if [ -n "${RESTORE_HOME:-}" ] && [ -d "$RESTORE_HOME" ]; then
     log "restoring Go/Cargo caches"
     cp -a "$RESTORE_HOME/." "$instdir/home/" 2>/dev/null || true
-    rm -rf "$(dirname "$RESTORE_HOME")"
+    # The Go module cache marks its package dirs read-only (dr-xr-xr-x), so a
+    # plain `rm -rf` fails to unlink their contents and, under `set -e`, would
+    # abort the build. Restore write permission first; never fail the build over
+    # a stale cache directory.
+    chmod -R u+w "$(dirname "$RESTORE_HOME")" 2>/dev/null || true
+    rm -rf "$(dirname "$RESTORE_HOME")" 2>/dev/null || true
     unset RESTORE_HOME
   fi
 }
