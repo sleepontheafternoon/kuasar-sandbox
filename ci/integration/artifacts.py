@@ -63,7 +63,11 @@ def identity(value):
 
 def digest(path):
     with Path(path).open("rb") as data:
-        return hashlib.file_digest(data, "sha256").hexdigest()
+        # Host orchestration retains the launcher's Python 3.9+ contract.
+        digest = hashlib.sha256()
+        for block in iter(lambda: data.read(1024 * 1024), b''):
+            digest.update(block)
+        return digest.hexdigest()
 
 
 def relative(value):
@@ -204,6 +208,19 @@ def helper_contract_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def capabilities_module():
+    spec = importlib.util.spec_from_file_location('e2e_capabilities', ROOT / 'test/e2e/lib/capabilities.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def plan_shards(plan, arch):
+    if plan['schema'] >= 4:
+        return {name: group['cases'] for name, group in plan['lanes'][arch]['groups'].items()}
+    return shards(plan['lanes'][arch]['selection'])
 
 
 def planned_helpers(selection, contract=None):
@@ -446,8 +463,11 @@ def release_test_revisions(pins, platform_sha):
 
 
 def check_plan(plan):
-    require(plan["schema"] in (2, 3), "unsupported integration plan")
-    require(plan["schema"] != 3 or "helper_contract" in plan, "new plan lacks its helper contract")
+    require(plan["schema"] in (2, 3, 4), "unsupported integration plan")
+    require(plan["schema"] < 3 or "helper_contract" in plan, "new plan lacks its helper contract")
+    if plan['schema'] >= 4:
+        import capability_routing
+        capability_routing.validate(plan)
     require(re.fullmatch(r"[0-9a-f]{40}", plan["framework_sha"]), "missing exact framework revision")
     require(set(plan["lanes"]) == set(ARCHES), "plan must contain both architectures")
     contract = plan['baseline'].get('delivery', 'historical')
@@ -472,7 +492,8 @@ def check_plan(plan):
         require(lane["products"] == sorted(set(lane["products"])) and set(lane["products"]) <= set(PRODUCTS),
                 "invalid affected product set")
         require(lane.get("embedded_products", []) in ([], ["envd"]), "unknown embedded product")
-        require(compatible_suite_selection(lane["selection"], plan["owners"], arch, case_files), "suite selection differs from trusted source filenames")
+        if plan['schema'] < 4:
+            require(compatible_suite_selection(lane["selection"], plan["owners"], arch, case_files), "suite selection differs from trusted source filenames")
         expected_perf = ["working-set-smoke"] if plan["mode"] == "source" and arch == "x86_64" and set(plan["owners"]) & {"platform", "sandboxer"} else []
         require(lane["performance"] == expected_perf, "performance checks differ from trusted mode/owner selection")
     validate_test_revisions(plan.get("test_revisions"))
@@ -615,6 +636,8 @@ def compose(plan, arch, assets, delta, output):
                 else:
                     shutil.copytree(source, stage / "test/e2e" / owner)
         normalize_e2e_cases(stage, case_files, from_owners=plan["mode"] == "source")
+        if plan['schema'] >= 4:
+            capabilities_module().verify(stage / 'test/e2e/cases', plan['case_requirements'])
         products = {}
         for name, unit in PRODUCTS.items():
             path = stage / "bin" / name
@@ -676,6 +699,9 @@ def compose(plan, arch, assets, delta, output):
                       "build_context": metadata["build_context"], "selection": lane["selection"],
                       "embedded": embedded, "helpers": helper_records, "helper_contract": plan["helper_contract"],
                       "files": tree_files(stage), "modes": tree_modes(stage)}
+        if plan['schema'] >= 4:
+            provenance['case_requirements'] = plan['case_requirements']
+            provenance['runner_configuration_sha256'] = plan['runner_configuration']['sha256']
         (stage / "provenance.json").write_bytes(canonical(provenance) + b"\n")
         stage.rename(output)
     return provenance
@@ -683,6 +709,11 @@ def compose(plan, arch, assets, delta, output):
 
 def verify_workspace(workspace, plan, arch):
     provenance = json.loads((workspace / "provenance.json").read_text())
+    if plan['schema'] >= 4:
+        require(provenance.get('case_requirements') == plan['case_requirements'] and
+                provenance.get('runner_configuration_sha256') == plan['runner_configuration']['sha256'],
+                'prepared capability contract differs from plan')
+        capabilities_module().verify(workspace / 'test/e2e/cases', plan['case_requirements'])
     require(provenance["plan_id"] == check_plan(plan) and provenance["arch"] == arch,
             "prepared workspace has the wrong plan/architecture")
     actual = tree_files(workspace)
@@ -809,18 +840,37 @@ def collect_results(plan, results):
         require(record["conclusion"] == "success" and record["selection"] == plan["lanes"][arch]["selection"],
                 f"selected {arch} validation did not pass")
         require(record.get("test_revisions") == plan["test_revisions"], "result test pins differ from plan")
-        shards = dict(record['shards'])
+        shards = expand_shards(plan, arch, record)
         if record.get('performance') is not None:
             shards['performance'] = record['performance']
         require(record == collect_shard_results(plan, arch, shards), 'architecture execution evidence differs from plan')
     return {"plan_id": identity(plan), "test_revisions": plan["test_revisions"], "architectures": results}
 
 
+SHARD_COMMON = ('arch', 'plan_id', 'test_revisions', 'provenance_sha256', 'preparation_environment')
+
+
+def expand_shards(plan, arch, record):
+    """Losslessly restore shared fields; compact evidence cannot override them."""
+    if plan['schema'] < 4:
+        return dict(record['shards'])
+    require(record.get('result_format') == 'capability-groups-v1', 'missing capability result format')
+    expected = plan_shards(plan, arch)
+    require(set(record['shards']) == set(expected), 'missing or unexpected compact capability group')
+    result = {}
+    for name, row in record['shards'].items():
+        require(not set((*SHARD_COMMON, 'shard', 'cases')) & row.keys(), 'group overrides shared execution evidence')
+        result[name] = dict(row, **{key: record[key] for key in SHARD_COMMON}, shard=name, cases=expected[name])
+    return result
+
+
 def check_timings(timings, cases):
     require(isinstance(timings, list) and [record['case'] for record in timings] == cases,
             'missing or duplicated case execution evidence')
-    require(all(record['exit_code'] == 0 and isinstance(record['wall_seconds'], (int, float)) and
-                record['wall_seconds'] >= 0 for record in timings), 'case execution did not pass')
+    require(all(type(record['exit_code']) is int and record['exit_code'] == 0 and
+                type(record['wall_seconds']) in (int, float) and
+                math.isfinite(record['wall_seconds']) and record['wall_seconds'] >= 0
+                for record in timings), 'case execution did not pass')
 
 
 def requires_clean_runtime(arch, shard):
@@ -836,7 +886,8 @@ def check_clean_environment(environment):
 
 
 def collect_shard_results(plan, arch, results):
-    expected = shards(plan["lanes"][arch]["selection"])
+    check_plan(plan)
+    expected = plan_shards(plan, arch)
     performance = plan['lanes'][arch]['performance']
     require(set(results) == set(expected) | ({'performance'} if performance else set()),
             f"missing or unexpected {arch} validation results")
@@ -850,7 +901,11 @@ def collect_shard_results(plan, arch, results):
         check_timings(result['timings'], cases)
         if cases:
             check_clean_environment(result.get('preparation_environment'))
-        if requires_clean_runtime(arch, shard):
+        group = plan['lanes'][arch].get('groups', {}).get(shard)
+        if group is not None:
+            import capability_routing
+            capability_routing.check_result(plan, arch, shard, result)
+        if (group is not None and group['runtime'] == 'runtime-only') or (group is None and requires_clean_runtime(arch, shard)):
             check_clean_environment(result.get('environment'))
         require(result.get("test_revisions") == plan["test_revisions"], "shard test pins differ from plan")
         require(re.fullmatch(r"[0-9a-f]{64}", result["provenance_sha256"]), "missing prepared input identity")
@@ -862,11 +917,21 @@ def collect_shard_results(plan, arch, results):
                 result['checks'] == performance, 'independent performance gate did not pass')
         check_timings(result['timings'], performance)
         prepared.add(result['provenance_sha256'])
-    require(len(prepared) == 1, "shards executed different prepared workspaces")
-    return {"arch": arch, "plan_id": identity(plan), "conclusion": "success",
+    require(len(prepared) == 1 or (not expected and not performance), "shards executed different prepared workspaces")
+    record = {"arch": arch, "plan_id": identity(plan), "conclusion": "success",
             "selection": plan["lanes"][arch]["selection"], "shards": {key: results[key] for key in expected},
-            "performance": results.get('performance'), "provenance_sha256": prepared.pop(),
+            "performance": results.get('performance'), "provenance_sha256": prepared.pop() if prepared else None,
             "test_revisions": plan["test_revisions"]}
+    if plan['schema'] >= 4:
+        environments = [results[key]['preparation_environment'] for key in expected]
+        require(not environments or all(value == environments[0] for value in environments),
+                'groups disagree on the common preparation environment')
+        record.update(result_format='capability-groups-v1',
+                      preparation_environment=environments[0] if environments else None)
+        record['shards'] = {name: {key: value for key, value in row.items()
+                                  if key not in (*SHARD_COMMON, 'shard', 'cases')}
+                            for name, row in record['shards'].items()}
+    return record
 
 
 def main():

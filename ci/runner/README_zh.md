@@ -36,6 +36,30 @@ TUN、vhost 设备、全部 capability、Docker keyring syscall 及 Connector �
 维护者接纳和只读 job token 不能消除这些风险。不可信 Fork 执行除了
 [CI](../../docs/ci_zh.md) 的接纳检查,还需要经过验证的隔离边界。
 
+<a id="capability-e2e-runners"></a>
+## 能力分配 E2E Runner
+
+按能力分配的 E2E 使用安装在宿主机的 Actions Runner 和现有 Workbench system 环境，
+不要求下文历史 nspawn slot provisioner。安装受支持的原生 Linux Actions Runner、
+Python 3.9+ 和 rootful Docker Engine，为专用 Runner 账户提供 Docker 权限及任务所属存储。
+Workbench 要求 cgroup v2、委派的 cpu/memory/pids controller、兼容内部 overlay2 的存储，
+以及所选 profile 声明的设备和内核能力。Runner 服务凭据必须位于全部任务挂载之外。
+
+可信 `ci/integration/runner-capabilities.json` 维护标签、架构、执行器、能力证据及
+CPU/内存/超时预算。在仅允许参与流程的公开仓库访问的组织 Runner group 中注册匹配标签后，通过实际 Workbench 及嵌套运行时路径执行产品用例，
+再将新增能力标为支持。注册标签本身不证明能力。Runner 需要访问不可变 GitHub 制品及
+所选 GHCR digest。镜像缺失、设备不可用或启动检查失败会明确失败；执行阶段不安装
+宿主工具，也不重建产品。
+
+每组使用新的 run/attempt/架构/分组目录及唯一所属 Workbench 实例。驱动器处理成功、
+失败及可捕获取消；`always()` 清理步骤仅重试所属实例的清理。保留有界启动/清理诊断和
+结果制品。宿主或 Runner 意外中断后，维护者应检查已记录实例，用相同 launcher 的原始
+root/name 执行 `cleanup`，然后回收存储。不得删除其他任务的容器、网络或 daemon 目录。
+
+排队中的组仍是必需项。Runner 离线时应恢复 Runner，或取消受影响运行并重跑全部必需工作。
+禁用 profile 会使无法满足需求的分配失败，不能减少覆盖，也不能转移已选公共任务。
+不能依据部分架构结果为绿色就合并。
+
 ## 主机布局
 
 | Slot | 角色 | Runner 名称 | CPU/NUMA | 内存 | 地址 |

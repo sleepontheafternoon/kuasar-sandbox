@@ -1,0 +1,191 @@
+{
+  "schema": 1,
+  "profiles": {
+    "hosted-x86": {
+      "arch": "x86_64",
+      "public": true,
+      "enabled": true,
+      "priority": 100,
+      "runs_on": [
+        "ubuntu-24.04"
+      ],
+      "executor": "native",
+      "capabilities": {
+        "bpf-map": {
+          "state": "supported",
+          "evidence": "https://github.com/kuasar-sandbox/kuasar-sandbox/actions/runs/38513108672"
+        },
+        "bpf-tc": {
+          "state": "supported",
+          "evidence": "https://github.com/kuasar-sandbox/kuasar-sandbox/actions/runs/38513108672"
+        },
+        "cgroup-v2": {
+          "state": "supported",
+          "evidence": "https://github.com/kuasar-sandbox/kuasar-sandbox/actions/runs/38513108672"
+        },
+        "docker": {
+          "state": "supported",
+          "evidence": "https://github.com/kuasar-sandbox/kuasar-sandbox/actions/runs/38513108672"
+        },
+        "geneve": {
+          "state": "supported",
+          "evidence": "https://github.com/kuasar-sandbox/kuasar-sandbox/actions/runs/38513108672"
+        },
+        "kvm": {
+          "state": "supported",
+          "evidence": "https://github.com/kuasar-sandbox/kuasar-sandbox/actions/runs/38513108672"
+        },
+        "netns": {
+          "state": "supported",
+          "evidence": "https://github.com/kuasar-sandbox/kuasar-sandbox/actions/runs/38513108672"
+        },
+        "systemd": {
+          "state": "supported",
+          "evidence": "https://github.com/kuasar-sandbox/kuasar-sandbox/actions/runs/38513108672"
+        },
+        "tun": {
+          "state": "supported",
+          "evidence": "https://github.com/kuasar-sandbox/kuasar-sandbox/actions/runs/38513108672"
+        },
+        "userfaultfd": {
+          "state": "supported",
+          "evidence": "https://github.com/kuasar-sandbox/kuasar-sandbox/actions/runs/38513108672"
+        },
+        "journald": {
+          "state": "supported",
+          "evidence": "https://github.com/kuasar-sandbox/kuasar-sandbox/actions/runs/38513108672"
+        }
+      },
+      "resources": {
+        "cpus": 2,
+        "memory_gib": 8,
+        "timeout_minutes": 120
+      }
+    },
+    "hosted-arm": {
+      "arch": "aarch64",
+      "public": true,
+      "enabled": true,
+      "priority": 100,
+      "runs_on": [
+        "ubuntu-24.04-arm"
+      ],
+      "executor": "native",
+      "capabilities": {
+        "bpf-map": {
+          "state": "supported",
+          "evidence": "Six hosted ARM connector network cases and their required startup operations passed: https://github.com/kuasar-sandbox/kuasar-sandbox/actions/runs/38711802171/job/116348967120"
+        },
+        "bpf-tc": {
+          "state": "supported",
+          "evidence": "Six hosted ARM connector network cases and their required startup operations passed: https://github.com/kuasar-sandbox/kuasar-sandbox/actions/runs/38711802171/job/116348967120"
+        },
+        "cgroup-v2": {
+          "state": "supported",
+          "evidence": "Hosted ARM API, proxy and runtask cases passed: https://github.com/kuasar-sandbox/kuasar-sandbox/actions/runs/38711802171/job/116348966955"
+        },
+        "docker": {
+          "state": "supported",
+          "evidence": "Hosted ARM image cases passed in the transported runtime-only image: https://github.com/kuasar-sandbox/kuasar-sandbox/actions/runs/38711802171/job/116348967075"
+        },
+        "geneve": {
+          "state": "supported",
+          "evidence": "Six hosted ARM connector network cases and their required startup operations passed: https://github.com/kuasar-sandbox/kuasar-sandbox/actions/runs/38711802171/job/116348967120"
+        },
+        "kvm": {
+          "state": "unsupported",
+          "evidence": "https://github.com/kuasar-sandbox/kuasar-sandbox/actions/runs/38036853423/job/114174350472"
+        },
+        "netns": {
+          "state": "supported",
+          "evidence": "Six hosted ARM connector network cases and their required startup operations passed: https://github.com/kuasar-sandbox/kuasar-sandbox/actions/runs/38711802171/job/116348967120"
+        },
+        "systemd": {
+          "state": "supported",
+          "evidence": "Hosted ARM API, proxy and runtask cases passed: https://github.com/kuasar-sandbox/kuasar-sandbox/actions/runs/38711802171/job/116348966955"
+        },
+        "tun": {
+          "state": "supported",
+          "evidence": "Six hosted ARM connector network cases and their required startup operations passed: https://github.com/kuasar-sandbox/kuasar-sandbox/actions/runs/38711802171/job/116348967120"
+        },
+        "userfaultfd": {
+          "state": "supported",
+          "evidence": "https://github.com/kuasar-sandbox/kuasar-sandbox/actions/runs/38036853423/job/114174350472"
+        },
+        "journald": {
+          "state": "unknown",
+          "evidence": "Separate journal socket/flush acceptance is not established by the hosted ARM systemd cases. Current journal-dependent cases also require the independently unsupported KVM capability; https://github.com/kuasar-sandbox/kuasar-sandbox/issues/254"
+        }
+      },
+      "resources": {
+        "cpus": 2,
+        "memory_gib": 8,
+        "timeout_minutes": 120
+      }
+    },
+    "supplemental-arm": {
+      "arch": "aarch64",
+      "public": false,
+      "enabled": true,
+      "priority": 100,
+      "runs_on": [
+        "self-hosted",
+        "Linux",
+        "ARM64",
+        "kuasar-arm-e2e"
+      ],
+      "executor": "workbench-system",
+      "capabilities": {
+        "bpf-map": {
+          "state": "supported",
+          "evidence": "https://github.com/kuasar-sandbox/kuasar-sandbox/issues/207#issuecomment-5974823648"
+        },
+        "bpf-tc": {
+          "state": "supported",
+          "evidence": "https://github.com/kuasar-sandbox/kuasar-sandbox/issues/207#issuecomment-5974823648"
+        },
+        "cgroup-v2": {
+          "state": "supported",
+          "evidence": "https://github.com/kuasar-sandbox/kuasar-sandbox/issues/207#issuecomment-5974823648"
+        },
+        "docker": {
+          "state": "supported",
+          "evidence": "https://github.com/kuasar-sandbox/kuasar-sandbox/issues/207#issuecomment-5974823648"
+        },
+        "geneve": {
+          "state": "supported",
+          "evidence": "https://github.com/kuasar-sandbox/kuasar-sandbox/issues/207#issuecomment-5974823648"
+        },
+        "kvm": {
+          "state": "supported",
+          "evidence": "https://github.com/kuasar-sandbox/kuasar-sandbox/issues/207#issuecomment-5974823648"
+        },
+        "netns": {
+          "state": "supported",
+          "evidence": "https://github.com/kuasar-sandbox/kuasar-sandbox/issues/207#issuecomment-5974823648"
+        },
+        "systemd": {
+          "state": "supported",
+          "evidence": "https://github.com/kuasar-sandbox/kuasar-sandbox/issues/207#issuecomment-5974823648"
+        },
+        "tun": {
+          "state": "supported",
+          "evidence": "https://github.com/kuasar-sandbox/kuasar-sandbox/issues/207#issuecomment-5974823648"
+        },
+        "userfaultfd": {
+          "state": "supported",
+          "evidence": "https://github.com/kuasar-sandbox/kuasar-sandbox/issues/207#issuecomment-5974823648"
+        },
+        "journald": {
+          "state": "supported",
+          "evidence": "https://github.com/kuasar-sandbox/kuasar-sandbox/issues/207#issuecomment-5974823648"
+        }
+      },
+      "resources": {
+        "cpus": 4,
+        "memory_gib": 16,
+        "timeout_minutes": 120
+      }
+    }
+  }
+}

@@ -224,6 +224,8 @@ class PreparedRunnerTests(unittest.TestCase):
         shutil.copyfile(MODULE.parent / 'lib/workspace.py', self.release / 'test/e2e/lib/workspace.py')
         shutil.copyfile(MODULE.parent / 'lib/demo_wheels.py', self.release / 'test/e2e/lib/demo_wheels.py')
         shutil.copyfile(MODULE.parent / 'lib/helper_contract.py', self.release / 'test/e2e/lib/helper_contract.py')
+        for name in ('capabilities.py', 'capability_probe.py'):
+            shutil.copyfile(MODULE.parent / 'lib' / name, self.release / 'test/e2e/lib' / name)
         helpers = self.release / 'test/e2e/helpers' / platform.machine()
         helpers.mkdir(parents=True)
         self.contract = helper_contract(sha='a' * 40, framework='a' * 40, names=())

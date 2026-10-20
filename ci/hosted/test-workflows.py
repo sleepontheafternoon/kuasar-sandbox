@@ -106,6 +106,33 @@ def check_request_rejection():
         assert result.returncode != 0
 
 
+def check_persistent_workspace_isolation():
+    # Execute the real setup and transport twice in a reused Actions workspace.
+    # A prior prepared tree must neither be overwritten nor block a new group.
+    steps = {row.get('name'): row for row in load('integration-architecture.yml')['jobs']['e2e']['steps']}
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory); temporary = root / 'temp'; temporary.mkdir()
+        (root / 'prepared').mkdir(); (root / 'prepared/stale').write_text('prior job')
+        payload = root / 'payload'; payload.write_text('current artifact')
+        import tarfile
+        with tarfile.open(root / 'prepared.tar', 'w') as archive:
+            archive.add(payload, arcname='aarch64/payload')
+        environment = dict(os.environ, RUNNER_TEMP=str(temporary), GITHUB_RUN_ID='42', GITHUB_RUN_ATTEMPT='1',
+                           TARGET_ARCH='aarch64', TEST_SHARD='supplemental-arm--snapshot',
+                           GITHUB_ENV=str(root / 'environment'))
+        workspaces = []
+        for _ in range(2):
+            subprocess.run(['bash', '-ceu', steps['Create a fresh execution workspace']['run']],
+                           cwd=root, env=environment, check=True)
+            workspace = Path((root / 'environment').read_text().splitlines()[-1].split('=', 1)[1])
+            assert workspace.parent == temporary and workspace not in workspaces
+            subprocess.run([sys.executable, '-B', str(ROOT / 'ci/integration/transport.py'), 'extract',
+                            str(root / 'prepared.tar'), str(workspace / 'prepared')], check=True)
+            assert (workspace / 'prepared/aarch64/payload').read_text() == 'current artifact'
+            workspaces.append(workspace)
+        assert (root / 'prepared/stale').read_text() == 'prior job'
+
+
 def check_helper_materialization():
     """Execute the real artifact transport/layout and validate exact tag inputs."""
     import importlib.util
@@ -347,11 +374,50 @@ def check():
         assert lane["with"]["arch"] == arch
     assert lanes["prepare"]["needs"] == "build"
     assert lanes["e2e"]["needs"] == ["build", "prepare"]
-    assert "matrix.shard" in lanes["e2e"]["concurrency"]["group"]
+    assert "matrix.group.id" in lanes["e2e"]["concurrency"]["group"]
     assert "inputs.arch" in lanes["e2e"]["concurrency"]["group"]
+    assert "github.run_attempt" in lanes["e2e"]["concurrency"]["group"]
     for arch, runner in (("x86_64", "ubuntu-24.04"), ("aarch64", "ubuntu-24.04-arm")):
-        for name in ("build", "prepare", "e2e", "performance"):
+        for name in ("build", "prepare", "performance"):
             assert expression(lanes[name]["runs-on"], {"inputs": {"arch": arch}}) == runner
+    # Only E2E allocation may select a supplemental profile, from the trusted
+    # build job's validated plan. All other lane allocations remain hosted.
+    assert lanes['e2e']['runs-on'] == '${{ matrix.group.runs_on }}'
+    assert lanes['e2e']['strategy']['matrix'] == {'group': '${{ fromJSON(needs.build.outputs.shards) }}'}
+    assert "needs.build.outputs.has_groups == 'true'" in lanes['e2e']['if']
+    profile_config = json.loads((ROOT / 'ci/integration/runner-capabilities.json').read_text())
+    for profile in profile_config['profiles'].values():
+        actual = expression(lanes['e2e']['runs-on'], {'matrix': {'group': {'runs_on': profile['runs_on']}}})
+        assert actual == profile['runs_on']
+    e2e_steps = {step.get('name'): step for step in lanes['e2e']['steps']}
+    assert e2e_steps["Run the selected capability group from immutable inputs"]["env"]["EXECUTION_RUNNER_ENVIRONMENT"] == "${{ runner.environment }}"
+    executor_upload = {step.get('name'): step for step in integration['resolve']['steps']}['Upload exact trusted executor']
+    assert executor_upload['with']['name'] == '${{ steps.executor.outputs.artifact }}'
+    assert executor_upload['with']['path'] == 'executor.tar.gz'
+    for arch in ('x86_64', 'aarch64'):
+        for key in ('executor_artifact', 'executor_digest', 'executor_tree'):
+            assert integration[arch]['with'][key] == '${{ needs.resolve.outputs.' + key + ' }}'
+    assert e2e_steps['Check out only the trusted executor']['if'] == "runner.environment == 'github-hosted'"
+    download_executor = e2e_steps['Download the exact executor capsule']
+    assert download_executor['if'] == "runner.environment == 'self-hosted'"
+    assert download_executor['with']['name'] == '${{ inputs.executor_artifact }}'
+    assert download_executor['with']['path'] == '${{ env.E2E_WORKSPACE }}/executor'
+    assert download_executor['timeout-minutes'] == 5
+    restore_executor = e2e_steps['Verify and restore exact executor Git objects']
+    assert restore_executor['if'] == download_executor['if']
+    assert restore_executor['timeout-minutes'] == 3
+    assert restore_executor['env']['EXECUTOR_DIGEST'] == '${{ inputs.executor_digest }}'
+    assert restore_executor['env']['TRUSTED_WORKFLOW_SHA'] == '${{ job.workflow_sha }}'
+    assert restore_executor['run'].index('hashlib.sha256') < restore_executor['run'].index("tarfile.open")
+    assert restore_executor['run'].index("tarfile.open") < restore_executor['run'].index('restore.py" restore')
+    assert e2e_steps['Bootstrap declared native execution profile']['if'] == "matrix.group.executor == 'native'"
+    assert e2e_steps["Release only this group's Workbench resources"]['if'] == "always() && matrix.group.executor == 'workbench-system' && env.E2E_WORKSPACE != ''"
+    assert 'mktemp -d' in e2e_steps['Create a fresh execution workspace']['run']
+    for step in lanes['e2e']['steps']:
+        if step.get('uses', '').endswith('/.github/actions/download-artifact'):
+            assert step['with']['path'].startswith('${{ env.E2E_WORKSPACE }}/')
+    assert e2e_steps['Upload exact shard result']['with']['path'].startswith('${{ env.E2E_WORKSPACE }}/results/')
+    assert "--delete-output" in e2e_steps["Remove only this task's retained files"]['run']
     building = {step.get("name"): step for step in lanes["build"]["steps"]}
     for name in ("Build trusted native archive readers in Workbench", "Build the affected delta and test helpers once"):
         assert building[name]["uses"] == "./framework/.github/actions/workbench"
@@ -365,6 +431,13 @@ def check():
         steps = {step.get("name"): step for step in lanes[name]["steps"]}
         assert steps["Download trusted native archive readers"]["with"]["name"] == "integration-readers-${{ inputs.arch }}-${{ github.run_id }}"
         assert "sha256sum --check SHA256SUMS" in steps["Verify and select the prebuilt archive readers"]["run"]
+    resolve_steps = integration['resolve']['steps']
+    resolve_names = [row.get('name') for row in resolve_steps]
+    assert resolve_names.index('Validate reusable workflow request') < resolve_names.index('Resolve declared companions for the read-only framework PR') < resolve_names.index('Validate exact source admission')
+    companion_step = next(row for row in resolve_steps if row.get('id') == 'companions')
+    assert companion_step['if'] == "inputs.mode == 'source' && github.event_name == 'pull_request'"
+    final_source = next(row for row in integration['results']['steps'] if row.get('name') == 'Recheck the current exact source candidate before acceptance')
+    assert final_source['env']['COMPANION_CANDIDATES'] == '${{ needs.resolve.outputs.companions }}'
     aggregate = load("aggregate-release.yml")["jobs"]
     assert aggregate["helper-build"]["needs"] == "prepare"
     assert aggregate["collect"]["needs"] == ["prepare", "helper-build"]
@@ -377,6 +450,7 @@ def check():
     assert '--arch "$TARGET_ARCH"' in helper["with"]["run"]
     assert "GH_TOKEN" not in helper["with"]["run"]
     check_helper_materialization()
+    check_persistent_workspace_isolation()
     assert integration["results"]["needs"] == ["resolve", "x86_64", "aarch64", "source-checks", "workbench-native", "workbench-release"]
     native = integration['workbench-native']
     assert native['needs'] == 'resolve'
@@ -422,7 +496,8 @@ def check():
     executor = json.dumps(lanes["e2e"])
     for forbidden in ("create-github-app-token", "go build", "cargo build", "source-owner.sh build", "src/platform"):
         assert forbidden not in executor, forbidden
-    assert "run-artifact-tests.py" in executor
+    assert "run-capability-group.py" in executor
+    assert 'run-artifact-tests.py' in (ROOT / 'ci/integration/run-capability-group.py').read_text()
     assert "sparse-checkout" in executor
     source_job = integration["source-checks"]
     assert source_job["needs"] == "resolve"

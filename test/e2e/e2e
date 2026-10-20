@@ -20,6 +20,8 @@ ROOT = Path(__file__).resolve().parent
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(ROOT / "lib"))
 import workspace
+import capabilities
+import capability_probe
 
 CASES = ROOT / "cases"
 SUITES = frozenset({
@@ -122,6 +124,7 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     workspace.require((release / "test/e2e/e2e").is_file() and
                       (release / "test/e2e/lib/common.sh").is_file(), "release has no public runner and libraries")
     provenance = workspace.verify(release) if (release / "provenance.json").exists() else {"schema": 1, "arch": arch}
+    capabilities.workspace_contract(release, provenance)
     workspace.require(provenance["arch"] == arch, "release inputs have the wrong architecture")
     candidates = [release / "bin" / arch, release / "bin"]
     source_bin = next((p for p in candidates if p.is_dir()), None)
@@ -199,6 +202,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     if not (work / "bin").is_dir():
         raise SystemExit(f"prepared workspace is missing bin/: {work}")
     provenance = workspace.verify(work)
+    contract = capabilities.workspace_contract(work, provenance)
     arch = normalize_arch(args.arch or provenance["arch"])
     workspace.require(arch == provenance["arch"] == platform.machine(), "execution requires the prepared native architecture")
     cases = selected(args, work / "test/e2e/cases")
@@ -229,6 +233,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         report["template_cache"]["directory"] = str(cache)
     failed = []
     try:
+        if contract is not None:
+            required = sorted({cap for case in cases for cap in contract['cases'][case.name]['requires']})
+            report['capabilities'] = capability_probe.check(required)
         workspace.load_images(work, provenance, env_base)
         for case in cases:
             case_id = case.name

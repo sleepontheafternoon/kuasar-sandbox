@@ -9,15 +9,29 @@ import time
 
 import artifacts
 import execution
+import capability_routing
 
 
-def execute(plan, arch, shard, workspace, result_path, clean_image=None):
+def execute(plan, arch, shard, workspace, result_path, clean_image=None, runner=None, executor_image=None):
     provenance = artifacts.verify_workspace(workspace, plan, arch)
     artifacts.require(platform.machine() == arch, "E2E requires the selected native target runner")
-    groups = artifacts.shards(provenance["selection"])
+    groups = artifacts.plan_shards(plan, arch)
     artifacts.require(shard in groups, "unselected E2E shard")
     result = execution.result_record(plan, arch, provenance, workspace)
     result.update(shard=shard, cases=groups[shard], environment={"kind": "native-host"})
+    if plan['schema'] >= 4:
+        group = plan['lanes'][arch]['groups'][shard]
+        profile = plan['runner_configuration']['value']['profiles'][group['profile']]
+        runner = runner if runner is not None else capability_routing.runner_identity(plan, arch, shard)
+        capability_routing.check_runner(plan, arch, profile, runner)
+        artifacts.require((profile['executor'] == 'workbench-system') == bool(executor_image), 'wrong E2E executor')
+        artifacts.require((group['runtime'] == 'runtime-only') == bool(clean_image), 'wrong E2E runtime environment')
+        result['execution'] = {'profile': group['profile'], 'executor': profile['executor'], 'runner': runner,
+                               'configuration_sha256': plan['runner_configuration']['sha256']}
+        if executor_image:
+            artifacts.require(executor_image == plan['execution_images'][arch]['image_id'], 'wrong Workbench image')
+            result['execution']['image_id'] = executor_image
+            result['environment'] = {'kind': 'workbench-system', 'image_id': executor_image}
     started = time.monotonic()
     result_path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -43,6 +57,8 @@ def execute(plan, arch, shard, workspace, result_path, clean_image=None):
                 if report.is_file():
                     public = json.loads(report.read_text())
                     result["timings"] = public["timings"]
+                    if plan['schema'] >= 4:
+                        result['capabilities'] = public.get('capabilities')
                     artifacts.require(public["arch"] == arch and public["cases"] == result["cases"] and
                                       public["provenance_sha256"] == result["provenance_sha256"],
                                       "public runner result differs from selected inputs")
@@ -52,6 +68,8 @@ def execute(plan, arch, shard, workspace, result_path, clean_image=None):
                     result['environment']['verified'] = True
             artifacts.check_timings(result["timings"], result["cases"])
             artifacts.verify_workspace(workspace, plan, arch)
+            if plan['schema'] >= 4:
+                capability_routing.check_result(plan, arch, shard, result)
         result["conclusion"] = "success"
     finally:
         result["wall_seconds"] = time.monotonic() - started
@@ -67,8 +85,11 @@ def main():
     parser.add_argument("--workspace", required=True, type=Path)
     parser.add_argument("--result", required=True, type=Path)
     parser.add_argument("--clean-image", help="immutable runtime-only image for source/compiler-free acceptance")
+    parser.add_argument('--runner-identity', type=Path, help='trusted host runner receipt for Workbench execution')
+    parser.add_argument('--executor-image', help='verified immutable Workbench image ID')
     args = parser.parse_args()
-    execute(json.loads(args.plan.read_text()), args.arch, args.shard, args.workspace.resolve(), args.result.resolve(), args.clean_image)
+    execute(json.loads(args.plan.read_text()), args.arch, args.shard, args.workspace.resolve(), args.result.resolve(),
+            args.clean_image, json.loads(args.runner_identity.read_text()) if args.runner_identity else None, args.executor_image)
 
 
 if __name__ == "__main__":

@@ -42,6 +42,9 @@ def validate(path, expected_pins=None, expected_sources=None, expected_contract=
         for name in cases:
             artifacts.case_name(name.removeprefix('test/e2e/cases/'))
             artifacts.require(members[name].isfile(), 'product case is not a file')
+        artifacts.capabilities_module().packaged(
+            lambda name: archive.extractfile(members[name]).read(),
+            {name for name, entry in members.items() if entry.isfile()})
         artifacts.validate_e2e_layout(
             {name.removeprefix('test/e2e/'): entry.mode for name, entry in members.items()
              if name.startswith('test/e2e/') and entry.isfile()},

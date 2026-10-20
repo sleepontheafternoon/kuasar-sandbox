@@ -46,6 +46,40 @@ runner credentials persist in the slot. Maintainer acceptance and read-only
 job tokens do not remove those risks. Untrusted Fork execution needs a verified
 isolation boundary in addition to the admission checks in [CI](../../docs/ci.md).
 
+<a id="capability-e2e-runners"></a>
+## Capability E2E runners
+
+Capability-routed E2E uses a host-installed Actions Runner and the existing
+Workbench system environment. It does not require the historical nspawn slot
+provisioner described below. Install a supported native Linux Actions Runner,
+Python 3.9+ and rootful Docker Engine; grant the dedicated Runner account Docker
+access and task-owned storage. Workbench requires cgroup v2, delegated
+cpu/memory/pids controllers, compatible inner overlay2 storage and the devices
+and kernel capabilities declared by the selected profile. Keep the runner's
+service credentials outside all task mounts.
+
+The trusted `ci/integration/runner-capabilities.json` owns labels, architecture,
+executor, capability evidence and CPU/memory/timeout budgets. Register matching
+labels in an organization runner group restricted to the participating public
+repositories, then qualify the actual Workbench and nested runtime paths with product
+cases before marking new capabilities supported. Registration labels alone do
+not prove capability. The runner needs access to immutable GitHub artifacts and
+the selected GHCR digest. Missing images, unavailable devices and failed startup
+checks fail explicitly; execution does not install host tools or rebuild products.
+
+Each group gets a fresh run/attempt/architecture/group directory and one owned
+Workbench instance. The driver handles success, failure and catchable cancellation;
+an `always()` cleanup step retries only that instance's cleanup. Retain bounded
+startup/cleanup diagnostics and the result artifact. After an abrupt host or
+Runner loss, an operator must inspect the recorded instance and use the same
+launcher's `cleanup` with its original root/name before reclaiming storage.
+Never remove another task's containers, networks or daemon directories.
+
+A queued group remains required. If its runner is offline, restore the runner or
+cancel the affected run and rerun the complete required work. Disabling a profile
+makes unsatisfied allocation fail; it cannot reduce coverage or redirect already
+selected public work. Do not merge on a partial green architecture result.
+
 ## Host layout
 
 | Slot | Role | Runner name | CPU/NUMA | Memory | Address |

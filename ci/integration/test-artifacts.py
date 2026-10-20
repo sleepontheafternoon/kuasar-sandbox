@@ -344,7 +344,7 @@ class ArtifactExecutionContracts(unittest.TestCase):
         script.write_text('set -eu\nprintf "%s" "$TMPDIR" > "' + str(self.marker) + '"\n'
                           'install -d -m 700 "$TMPDIR/owned"\ntouch "$TMPDIR/owned/state"\n')
         self.arch = os.uname().machine
-        self.plan = {'lanes': {arch: {'performance': []} for arch in subject.ARCHES}, 'test_revisions': test_revisions()}
+        self.plan = {'schema': 2, 'lanes': {arch: {'performance': []} for arch in subject.ARCHES}, 'test_revisions': test_revisions()}
         self.provenance = {'helper_contract': helper_contract(sha='d'*40, framework='d'*40, names=()), 'arch': self.arch, 'selection': {'cases': [self.case]}, 'helpers': {},
                            'embedded': {'init': 'a' * 64}, 'test_revisions': test_revisions(),
                            'prepared_cases': [self.case]}
@@ -362,6 +362,7 @@ class ArtifactExecutionContracts(unittest.TestCase):
     def execute(self, shard='storage', performance=False):
         arch = 'x86_64' if performance else self.arch
         self.provenance['arch'] = arch
+        self.plan['lanes'][arch]['selection'] = self.provenance['selection']
         self.inputs.seal(self.root, self.provenance)
         credentials = {key: '' for key in ('GH_TOKEN', 'GITHUB_TOKEN', 'CALLER_TOKEN', 'KUASAR_CI_APP_PRIVATE_KEY')}
         with patch.object(self.executor.artifacts, 'verify_workspace', return_value=self.provenance), \
@@ -511,6 +512,14 @@ class KernelChecksumArchiveContracts(unittest.TestCase):
                 subject.unpack(payload, root / "extra", "vmlinux", {})
 
 
+class KernelReleaseInputContracts(unittest.TestCase):
+    def test_kernel_script_only_changes_remain_candidate_build_inputs(self):
+        for path in ("native-deps/deps/common.sh", "native-deps/deps/build-vmlinux.sh",
+                     "native-deps/Makefile"):
+            with self.subTest(path=path):
+                self.assertIn("vmlinux", subject.changed_products({"guest-runtime": [path]}))
+
+
 class ArtifactContracts(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -604,6 +613,8 @@ class ArtifactContracts(unittest.TestCase):
                 shutil.copy2(runner / "lib/workspace.py", lib / "workspace.py")
                 shutil.copy2(runner / "lib/demo_wheels.py", lib / "demo_wheels.py")
                 shutil.copy2(runner / "lib/helper_contract.py", lib / "helper_contract.py")
+                for name in ('capabilities.py', 'capability_probe.py'):
+                    shutil.copy2(runner / 'lib' / name, lib / name)
                 shutil.copy2(runner / "lib/common.sh", lib / "common.sh")
             test_records[owner] = subject.tree_files(source)
         self.metadata = {"plan_id": subject.identity(self.plan), "arch": arch, "products": records,
@@ -935,7 +946,14 @@ class ArtifactContracts(unittest.TestCase):
         receipts = self.workbench_stage()
         fixed = (platform, {unit: row['version'] for unit, row in units.items()}, records,
                  self.plan['platform_source'], WORKBENCH_CASES)
-        with patch.object(resolver.source_inputs, 'staged_inputs', return_value=fixed), patch.object(resolver, 'public'), \
+        def historical_inputs(stage, version, sha, output):
+            for owner, names in WORKBENCH_CASES.items():
+                root = platform / 'test/e2e/platform' if owner == 'platform' else output / 'sources' / resolver.source_inputs.tag_sources.OWNER_UNITS[owner] / 'test/e2e'
+                (root / 'cases').mkdir(parents=True, exist_ok=True)
+                for name in names:
+                    (root / 'cases' / name).write_text('#!/bin/bash\nexit 0\n')
+            return fixed
+        with patch.object(resolver.source_inputs, 'staged_inputs', side_effect=historical_inputs), patch.object(resolver, 'public'), \
              patch('helper_inputs.discover', return_value=self.plan['helper_contract']), \
              patch.object(resolver.release, 'tag_sha', side_effect=lambda repo, tag: sha if repo == resolver.PLATFORM else 'c' * 40), \
              patch.dict(os.environ, {'RELEASE_VERSION': version, 'PLATFORM_SOURCE_SHA': sha}):

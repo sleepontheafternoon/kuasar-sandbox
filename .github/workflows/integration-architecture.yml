@@ -9,6 +9,15 @@ on:
       framework_sha:
         required: true
         type: string
+      executor_artifact:
+        required: true
+        type: string
+      executor_digest:
+        required: true
+        type: string
+      executor_tree:
+        required: true
+        type: string
       plan_artifact:
         required: true
         type: string
@@ -21,7 +30,7 @@ permissions:
 
 # Each invocation has its own build -> prepare -> native E2E lifecycle.
 concurrency:
-  group: artifact-${{ github.repository }}-${{ github.run_id }}-${{ inputs.arch }}
+  group: artifact-${{ github.repository }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.arch }}
   cancel-in-progress: true
 
 jobs:
@@ -31,6 +40,7 @@ jobs:
     timeout-minutes: 180
     outputs:
       shards: ${{ steps.plan.outputs.shards }}
+      has_groups: ${{ steps.plan.outputs.has_groups }}
       performance: ${{ steps.plan.outputs.performance }}
       product_cases: ${{ steps.plan.outputs.product_cases }}
     env:
@@ -43,7 +53,8 @@ jobs:
           ref: ${{ inputs.framework_sha }}
           path: framework
           persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: ./framework/.github/actions/download-artifact
+        timeout-minutes: 35
         with:
           name: ${{ inputs.plan_artifact }}
           path: plan
@@ -57,13 +68,14 @@ jobs:
           [ "$FRAMEWORK_SHA" = "$TRUSTED_WORKFLOW_SHA" ]
           case "$TARGET_ARCH" in x86_64|aarch64) ;; *) exit 1 ;; esac
           PYTHONPATH=framework/ci/integration python3 -B - <<'PYTHON'
-          import artifacts, json, os
+          import artifacts, capability_routing, json, os
           plan = json.load(open('plan/plan.json'))
           artifacts.check_plan(plan)
           artifacts.require(plan['framework_sha'] == os.environ['FRAMEWORK_SHA'], 'framework revision mismatch')
-          groups = artifacts.shards(plan['lanes'][os.environ['TARGET_ARCH']]['selection'])
+          groups = capability_routing.matrix(plan, os.environ['TARGET_ARCH'])
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              output.write('shards=' + json.dumps(list(groups)) + '\n')
+              output.write('shards=' + json.dumps(groups) + '\n')
+              output.write('has_groups=' + json.dumps(bool(groups)) + '\n')
               output.write('performance=' + json.dumps(bool(plan['lanes'][os.environ['TARGET_ARCH']]['performance'])) + '\n')
               output.write('product_cases=' + json.dumps(bool(plan['lanes'][os.environ['TARGET_ARCH']]['selection']['cases'])) + '\n')
           PYTHON
@@ -102,7 +114,8 @@ jobs:
           overwrite: true
       - name: Download exact aggregate stage
         if: inputs.stage_artifact != ''
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: ./framework/.github/actions/download-artifact
+        timeout-minutes: 35
         with:
           name: ${{ inputs.stage_artifact }}
           path: aggregate-stage
@@ -168,18 +181,21 @@ jobs:
           ref: ${{ inputs.framework_sha }}
           path: framework
           persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: ./framework/.github/actions/download-artifact
+        timeout-minutes: 35
         with:
           name: ${{ inputs.plan_artifact }}
           path: plan
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: ./framework/.github/actions/download-artifact
+        timeout-minutes: 35
         with:
           name: integration-build-${{ inputs.arch }}-${{ github.run_id }}
           path: transport
       - name: Bootstrap archive execution prerequisites
         run: bash framework/ci/hosted/bootstrap.sh --profile artifact-prepare
       - name: Download trusted native archive readers
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: ./framework/.github/actions/download-artifact
+        timeout-minutes: 35
         with:
           name: integration-readers-${{ inputs.arch }}-${{ github.run_id }}
           path: readers
@@ -205,11 +221,17 @@ jobs:
             python3 -B framework/ci/integration/prepare-artifacts.py "${clean[@]}" --plan plan/plan.json \
             --arch "$TARGET_ARCH" --assets inputs/assets --delta inputs/delta --workspace "prepared/$TARGET_ARCH"
           cp inputs/build-time.txt build-time.txt
+          if [ -n "${KUASAR_CLEAN_PREPARE_IMAGE:-}" ]; then
+            python3 -B framework/ci/integration/runtime_archive.py \
+              --workspace "prepared/$TARGET_ARCH" --archive runtime.tar.gz
+          fi
           tar -czf prepared.tar.gz -C prepared "$TARGET_ARCH"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: integration-prepared-${{ inputs.arch }}-${{ github.run_id }}
-          path: prepared.tar.gz
+          path: |
+            prepared.tar.gz
+            runtime.tar.gz
           compression-level: 0
           if-no-files-found: error
           retention-days: 1
@@ -226,23 +248,34 @@ jobs:
           overwrite: true
 
   e2e:
-    if: github.event.repository.visibility == 'public' && github.event.repository.full_name == github.repository
+    name: e2e (${{ matrix.group.id }})
+    if: github.event.repository.visibility == 'public' && github.event.repository.full_name == github.repository && needs.build.outputs.has_groups == 'true'
     needs: [build, prepare]
-    runs-on: ${{ inputs.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
-    timeout-minutes: 120
+    runs-on: ${{ matrix.group.runs_on }}
+    timeout-minutes: ${{ matrix.group.timeout_minutes }}
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(needs.build.outputs.shards) }}
+        group: ${{ fromJSON(needs.build.outputs.shards) }}
     concurrency:
-      group: artifact-e2e-${{ github.repository }}-${{ github.run_id }}-${{ inputs.arch }}-${{ matrix.shard }}
+      group: artifact-e2e-${{ github.repository }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.arch }}-${{ matrix.group.id }}
       cancel-in-progress: true
     env:
       TARGET_ARCH: ${{ inputs.arch }}
-      TEST_SHARD: ${{ matrix.shard }}
+      TEST_SHARD: ${{ matrix.group.id }}
     steps:
+      - name: Create a fresh execution workspace
+        run: |
+          set -euo pipefail
+          task=$(mktemp -d "$RUNNER_TEMP/kuasar-e2e-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${TARGET_ARCH}-${TEST_SHARD}-XXXXXX")
+          echo "E2E_WORKSPACE=$task" >> "$GITHUB_ENV"
       - name: Check out only the trusted executor
+        if: runner.environment == 'github-hosted'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 15
+        env:
+          GIT_HTTP_LOW_SPEED_LIMIT: '1024'
+          GIT_HTTP_LOW_SPEED_TIME: '180'
         with:
           repository: kuasar-sandbox/kuasar-sandbox
           ref: ${{ inputs.framework_sha }}
@@ -250,60 +283,129 @@ jobs:
           persist-credentials: false
           sparse-checkout-cone-mode: false
           sparse-checkout: |
+            /.github/actions/download-artifact/
             /ci/hosted/
             /ci/integration/
             /release/tag_sources.py
             /release/selection.py
             /test/e2e/package_inputs.py
-            /test/e2e/lib/helper_contract.py
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+            /test/e2e/lib/
+            /workbench/
+      - name: Download the exact executor capsule
+        if: runner.environment == 'self-hosted'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        timeout-minutes: 5
+        with:
+          name: ${{ inputs.executor_artifact }}
+          path: ${{ env.E2E_WORKSPACE }}/executor
+      - name: Verify and restore exact executor Git objects
+        if: runner.environment == 'self-hosted'
+        timeout-minutes: 3
+        env:
+          FRAMEWORK_SHA: ${{ inputs.framework_sha }}
+          TRUSTED_WORKFLOW_SHA: ${{ job.workflow_sha }}
+          EXECUTOR_DIGEST: ${{ inputs.executor_digest }}
+          EXECUTOR_TREE: ${{ inputs.executor_tree }}
+        run: |
+          set -euo pipefail
+          [ "$FRAMEWORK_SHA" = "$TRUSTED_WORKFLOW_SHA" ]
+          python3 -I - <<'PYTHON'
+          import hashlib, os, pathlib, re, tarfile
+          root = pathlib.Path(os.environ['E2E_WORKSPACE']) / 'executor'
+          archive = root / 'executor.tar.gz'
+          digest = os.environ['EXECUTOR_DIGEST']
+          assert re.fullmatch('[0-9a-f]{64}', digest)
+          assert archive.is_file() and not archive.is_symlink()
+          assert 0 < archive.stat().st_size <= 16 * 1024 * 1024
+          assert hashlib.sha256(archive.read_bytes()).hexdigest() == digest
+          # Execute only the helper from the hash-bound trusted resolve artifact.
+          with tarfile.open(archive, 'r:gz') as source:
+              found = []
+              count = total = 0
+              for member in source:
+                  count += 1
+                  total += member.size
+                  assert count <= 10000 and 0 <= total <= 64 * 1024 * 1024
+                  if member.name == 'framework/ci/integration/executor_transport.py':
+                      assert member.isfile() and 0 < member.size <= 64 * 1024
+                      found.append(source.extractfile(member).read(64 * 1024 + 1))
+              assert len(found) == 1
+          with (root / 'restore.py').open('xb') as output:
+              output.write(found[0])
+          PYTHON
+          python3 -I "$E2E_WORKSPACE/executor/restore.py" restore \
+            --archive "$E2E_WORKSPACE/executor/executor.tar.gz" --sha "$FRAMEWORK_SHA" \
+            --tree "$EXECUTOR_TREE" --digest "$EXECUTOR_DIGEST" --destination "$GITHUB_WORKSPACE/framework"
+      - uses: ./framework/.github/actions/download-artifact
+        timeout-minutes: 35
         with:
           name: ${{ inputs.plan_artifact }}
-          path: plan
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+          path: ${{ env.E2E_WORKSPACE }}/plan
+      - uses: ./framework/.github/actions/download-artifact
+        timeout-minutes: 35
         with:
           name: integration-prepared-${{ inputs.arch }}-${{ github.run_id }}
-          path: transport
+          path: ${{ env.E2E_WORKSPACE }}/transport
       - name: Bootstrap declared native execution profile
+        if: matrix.group.executor == 'native'
         run: |
           profile=artifact-x86
           if [ "$TARGET_ARCH" = aarch64 ]; then profile=artifact-arm; fi
           bash framework/ci/hosted/bootstrap.sh --profile "$profile"
       - name: Download trusted native archive readers
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: ./framework/.github/actions/download-artifact
+        timeout-minutes: 35
         with:
           name: integration-readers-${{ inputs.arch }}-${{ github.run_id }}
-          path: readers
+          path: ${{ env.E2E_WORKSPACE }}/readers
       - name: Verify and select the prebuilt archive readers
         run: |
-          (cd readers && sha256sum --check SHA256SUMS)
-          chmod 0755 readers/fsck.erofs readers/dump.erofs
-          echo "$GITHUB_WORKSPACE/readers" >> "$GITHUB_PATH"
-          echo "KUASAR_RUNTIME_READER=$GITHUB_WORKSPACE/readers/runtime-payloads.py" >> "$GITHUB_ENV"
-      - name: Prepare an isolated runtime without Go, Rust or component sources
-        if: matrix.shard == 'storage' || matrix.shard == 'snapshot' || (inputs.arch == 'aarch64' && matrix.shard == 'image')
+          (cd "$E2E_WORKSPACE/readers" && sha256sum --check SHA256SUMS)
+          chmod 0755 "$E2E_WORKSPACE/readers/"{fsck.erofs,dump.erofs}
+          echo "$E2E_WORKSPACE/readers" >> "$GITHUB_PATH"
+          echo "KUASAR_RUNTIME_READER=$E2E_WORKSPACE/readers/runtime-payloads.py" >> "$GITHUB_ENV"
+      - name: Run the selected capability group from immutable inputs
+        env:
+          EXECUTION_RUNNER_ENVIRONMENT: ${{ runner.environment }}
         run: |
-          docker build --file framework/ci/hosted/e2e-runtime.Dockerfile \
-            --tag "kuasar-e2e-runtime:${GITHUB_RUN_ID}-${TARGET_ARCH}-${TEST_SHARD}" framework/ci/hosted
-          image=$(docker image inspect --format '{{.Id}}' "kuasar-e2e-runtime:${GITHUB_RUN_ID}-${TARGET_ARCH}-${TEST_SHARD}")
-          echo "KUASAR_CLEAN_E2E_IMAGE=$image" >> "$GITHUB_ENV"
-      - name: Run selected cases from immutable prepared inputs
+          python3 -B framework/ci/integration/transport.py extract "$E2E_WORKSPACE/transport/prepared.tar.gz" "$E2E_WORKSPACE/prepared"
+          python3 -B framework/ci/integration/run-capability-group.py --plan "$E2E_WORKSPACE/plan/plan.json" \
+            --arch "$TARGET_ARCH" --group "$TEST_SHARD" --workspace "$E2E_WORKSPACE/prepared/$TARGET_ARCH" \
+            --runtime "$E2E_WORKSPACE/transport/runtime.tar.gz" --readers "$E2E_WORKSPACE/readers" --root "$E2E_WORKSPACE/state" \
+            --inputs "$E2E_WORKSPACE/inputs" --result "$E2E_WORKSPACE/results/$TEST_SHARD.json"
+      - name: Release only this group's Workbench resources
+        if: always() && matrix.group.executor == 'workbench-system' && env.E2E_WORKSPACE != ''
         run: |
-          python3 -B framework/ci/integration/transport.py extract transport/prepared.tar.gz prepared
-          clean=()
-          if [ -n "${KUASAR_CLEAN_E2E_IMAGE:-}" ]; then clean=(--clean-image "$KUASAR_CLEAN_E2E_IMAGE"); fi
-          python3 -B framework/ci/integration/run-artifact-tests.py "${clean[@]}" --plan plan/plan.json \
-            --arch "$TARGET_ARCH" --shard "$TEST_SHARD" --workspace "prepared/$TARGET_ARCH" \
-            --result "results/$TEST_SHARD.json"
-      - name: Upload exact shard result
-        if: always()
+          python3 -B framework/ci/integration/run-capability-group.py --cleanup --root "$E2E_WORKSPACE/state" --diagnostics "$E2E_WORKSPACE/diagnostics"
+      - name: Retain supplemental startup and cleanup diagnostics
+        if: always() && matrix.group.executor == 'workbench-system' && env.E2E_WORKSPACE != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: integration-shard-${{ inputs.arch }}-${{ matrix.shard }}-${{ github.run_id }}
-          path: results/${{ matrix.shard }}.json
+          name: integration-e2e-diagnostics-${{ inputs.arch }}-${{ matrix.group.id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.E2E_WORKSPACE }}/diagnostics
+          retention-days: 7
+          if-no-files-found: warn
+      - name: Upload exact shard result
+        if: always() && env.E2E_WORKSPACE != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: integration-shard-${{ inputs.arch }}-${{ matrix.group.id }}-${{ github.run_id }}
+          path: ${{ env.E2E_WORKSPACE }}/results/${{ matrix.group.id }}.json
           if-no-files-found: error
           retention-days: 7
           overwrite: true
+
+      - name: Remove only this task's retained files
+        if: always() && env.E2E_WORKSPACE != ''
+        env:
+          EXECUTOR: ${{ matrix.group.executor }}
+        run: |
+          set -euo pipefail
+          [[ "$E2E_WORKSPACE" == "$RUNNER_TEMP"/kuasar-e2e-* ]]
+          if [ "$EXECUTOR" = workbench-system ] && [ -d "$E2E_WORKSPACE/state" ]; then
+            python3 -B framework/ci/integration/run-capability-group.py --cleanup --root "$E2E_WORKSPACE/state" --delete-output
+          fi
+          rm -rf -- "$E2E_WORKSPACE"
 
   performance:
     if: github.event.repository.visibility == 'public' && github.event.repository.full_name == github.repository && needs.build.outputs.performance == 'true'
@@ -322,17 +424,20 @@ jobs:
           persist-credentials: false
           sparse-checkout-cone-mode: false
           sparse-checkout: |
+            /.github/actions/download-artifact/
             /ci/hosted/
             /ci/integration/
             /release/tag_sources.py
             /release/selection.py
             /test/e2e/package_inputs.py
-            /test/e2e/lib/helper_contract.py
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+            /test/e2e/lib/
+      - uses: ./framework/.github/actions/download-artifact
+        timeout-minutes: 35
         with:
           name: ${{ inputs.plan_artifact }}
           path: plan
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: ./framework/.github/actions/download-artifact
+        timeout-minutes: 35
         with:
           name: integration-prepared-${{ inputs.arch }}-${{ github.run_id }}
           path: transport
@@ -342,7 +447,8 @@ jobs:
           if [ "$TARGET_ARCH" = aarch64 ]; then profile=artifact-arm; fi
           bash framework/ci/hosted/bootstrap.sh --profile "$profile"
       - name: Download trusted native archive readers
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: ./framework/.github/actions/download-artifact
+        timeout-minutes: 35
         with:
           name: integration-readers-${{ inputs.arch }}-${{ github.run_id }}
           path: readers
@@ -381,10 +487,17 @@ jobs:
           BUILD_RESULT: ${{ needs.build.result }}
           PREPARE_RESULT: ${{ needs.prepare.result }}
           E2E_RESULT: ${{ needs.e2e.result }}
+          E2E_REQUIRED: ${{ needs.build.outputs.has_groups }}
           PERFORMANCE_RESULT: ${{ needs.performance.result }}
           PERFORMANCE_REQUIRED: ${{ needs.build.outputs.performance }}
         run: |
-          test "$BUILD_RESULT/$PREPARE_RESULT/$E2E_RESULT" = success/success/success
+          test "$BUILD_RESULT/$PREPARE_RESULT" = success/success
+          if [ "$E2E_REQUIRED" = true ]; then
+            test "$E2E_RESULT" = success
+          else
+            test "$E2E_REQUIRED" = false
+            test "$E2E_RESULT" = skipped
+          fi
           if [ "$PERFORMANCE_REQUIRED" = true ]; then
             test "$PERFORMANCE_RESULT" = success
           else
@@ -396,18 +509,20 @@ jobs:
           ref: ${{ inputs.framework_sha }}
           path: framework
           persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: ./framework/.github/actions/download-artifact
+        timeout-minutes: 35
         with:
           name: ${{ inputs.plan_artifact }}
           path: plan
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: ./framework/.github/actions/download-artifact
+        timeout-minutes: 35
+        if: needs.build.outputs.has_groups == 'true' || needs.build.outputs.performance == 'true'
         with:
           pattern: integration-shard-${{ inputs.arch }}-*-${{ github.run_id }}
           path: shards
-          merge-multiple: true
       - name: Explicitly collect this architecture's shards
         run: |
-          mkdir results
+          mkdir -p results shards
           python3 -B framework/ci/integration/artifacts.py shard-results \
             --plan plan/plan.json --arch "$TARGET_ARCH" --results shards > "results/$TARGET_ARCH.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

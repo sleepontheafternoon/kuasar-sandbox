@@ -54,7 +54,61 @@ the exact-source static no-libc probe in that architecture's `helpers.json`.
 Unselected helpers are not prerequisites. Demo consumes the prepared local
 native image identity, never a replacement or a second ARM digest list.
 
-CI resolves exact test filenames and selects broad suites for changed owners. Source builds finish before preparation. Source-mode CI admits candidate refs and baseline tags once and freezes their verified inputs. When relevant product inputs are unchanged, CI can reuse baseline products while still running candidate tests and helpers. Recorded source identities are provenance, not independent test selectors. For new published releases, each owner's products, packaged tests, helpers and guides come from the same selected owner tag; exact-assets mode consumes the shipped materials. Historical releases retain their actual recorded origins and evidence. CI preparation runs in an isolated runtime with no Go/Rust toolchains or component source trees. Every suite shard invokes the same packaged runner; storage, snapshot and ARM image acceptance also use an isolated runtime. Preparation and execution image IDs and environment checks are bound to their results. Results require every selected case's successful exit and one unchanged prepared input identity. Hosted ARM CI selects accelerator and guest-runtime non-KVM cases; exclusions are explicit. A static lane has zero product cases and is never product E2E acceptance.
+CI resolves exact test filenames and selects broad suites for changed owners. Source builds finish before preparation. Source-mode CI admits candidate refs and baseline tags once and freezes their verified inputs. When relevant product inputs are unchanged, CI can reuse baseline products while still running candidate tests and helpers. Recorded source identities are provenance, not independent test selectors. For new published releases, each owner's products, packaged tests, helpers and guides come from the same selected owner tag; exact-assets mode consumes the shipped materials. Historical releases retain their actual recorded origins and evidence. CI preparation runs in an isolated runtime with no Go/Rust toolchains or component source trees. Every suite shard invokes the same packaged runner; storage, snapshot and ARM image acceptance also use an isolated runtime. Preparation and execution image IDs and environment checks are bound to their results. Results require every selected case's successful exit and one unchanged prepared input identity. Historical ARM plans select the original accelerator and guest-runtime subset; schema 4 allocates the complete suite-selected set by capability. A static lane has zero product cases and is never product E2E acceptance.
+
+## Static execution requirements
+
+Each new-format owner carries `test/e2e/lib/requirements.json` containing
+`{"schema":1}` (platform uses `test/e2e/platform/lib/requirements.json`). Every
+case declares its minimum execution requirements in a single comment before
+shell statements, immediately below the shebang:
+
+```bash
+#!/usr/bin/env bash
+# e2e-requires: ["kvm","tun"]
+```
+
+Use `# e2e-requires: []` when no optional kernel/service capability is needed.
+The declaration includes requirements reached through shared helpers and the
+actual product path. Ordinary Linux utilities, root access and prepared inputs
+remain part of the executor contract. Do not declare devices or services that a
+case only mentions in comments or deliberately tests as absent.
+
+The supported executors provide the common E2E user-space dependencies, including
+Redis, and privileged mount/PID namespace operations. These are baseline executor
+prerequisites, not optional placement capabilities. A restricted container that
+cannot meet them is not an eligible executor merely because its labels match.
+Credentialed OBS remains an explicit suite opt-in; a capability declaration does
+not select that suite or supply its credentials. Declare the default prepared
+fixture path, rather than optional developer overrides such as `IMAGE_A`/`IMAGE_B`.
+
+| Capability | Required operation |
+| --- | --- |
+| `kvm` | Open KVM API 12 and create a VM |
+| `tun` | Create and close a TAP device |
+| `userfaultfd` | Open userfaultfd and negotiate its API |
+| `bpf-map` | Create, pin and remove a BPF map |
+| `bpf-tc` | Load a SCHED_CLS program and attach it to TC ingress |
+| `netns` | Create a network namespace and veth pair |
+| `geneve` | Create a kernel GENEVE link |
+| `systemd` | Connect to the systemd PID 1 manager |
+| `journald` | Access the native journal socket and synchronize it |
+| `cgroup-v2` | Create a writable child with memory control |
+| `docker` | Connect to the execution environment's Docker daemon |
+
+Missing, duplicated, malformed or unknown declarations fail; shell expressions
+are never evaluated. Resolver, package validation and preparation bind both case
+bytes and normalized requirements. `run` checks only the selected requirements
+inside the actual runtime and retains the successful operations in its report.
+A failed check is an environment failure, never a skipped passing case. Product
+assertions still provide acceptance; a startup check alone is insufficient.
+
+Add, remove or change cases in their owning repository. Normal pinned source
+selection discovers the new inventory; no platform case-to-runner list needs an
+update. A new capability name requires a shared definition, check and runner
+evidence. Suite impact selection and credentialed OBS opt-in remain unchanged.
+Historical packages without any owner markers retain their historical contract;
+mixed generations fail with a selected-source update diagnostic.
 
 Unit, race, vet, source helper, UFFD performance and working-set gates remain independent. `test/perf/warmpool-dedup.sh` retains the warm-pool characterization and its data/measurement assertions under `make perf-warmpool-dedup`; it is not a correctness suite. Component source checks stay in their owning repositories.
 

@@ -4,13 +4,13 @@
 
 ## 1. Public caller and trusted control
 
-The platform owns `ci-entry.yml`, `integration-tests.yml` and `integration-architecture.yml`. Component PR wrappers keep `ci-entry.yml@main`; GitHub resolves that trusted framework once per run. Every hosted job, including admission, coordination, publication, finalization and cleanup, checks **the actual event repository before runner allocation**:
+The platform owns `ci-entry.yml`, `integration-tests.yml` and `integration-architecture.yml`. Component PR wrappers keep `ci-entry.yml@main`; GitHub resolves that trusted framework once per run. Every job, including admission, coordination, publication, finalization and cleanup, checks **the actual event repository before runner allocation**:
 
 ```yaml
 if: github.event.repository.visibility == 'public' && github.event.repository.full_name == github.repository
 ```
 
-A public workflow provider, candidate input or companion cannot authorize a private/internal/unknown actual caller. Such calls allocate no hosted jobs and provide no successful acceptance evidence. There is no private ARM queue, private adaptation, larger runner or paid fallback. Existing runner provisioning remains documented under [ci/runner](../ci/runner/README.md); this workflow does not alter those services.
+A public workflow provider, candidate input or companion cannot authorize a private/internal/unknown actual caller. Such calls allocate no jobs and provide no successful acceptance evidence. Public callers may allocate capability-matched supplemental E2E groups under the trusted profile policy. Runner integration and provisioning are documented under [ci/runner](../ci/runner/README.md).
 
 Component callers and platform forks use trusted-main `pull_request_target` control for `main` and `release/vMAJOR.MINOR.x`. Non-draft same-repository component PRs retain automatic admission. Fork admission still queries current active organization membership; `author_association` is not membership evidence. Admission validates current PR/base/head refs and the two parents of the integration commit, and writes `kuasar/ci-exact-head=pending` to that integration commit. Drafts, external forks and conflicts do not get a successful E2E result.
 
@@ -20,7 +20,7 @@ The required `ci / finalize` job collects the complete platform PR result and re
 
 An admission failure or deferred Draft must not complete the trusted finalizer successfully. The primary target branch ref is read again, as well as the PR metadata and ordered integration parents, so a cached PR response cannot validate an older base. Trusted finalization also reuses the current source-set validator to compare the effective companion declaration; unrelated prose edits do not invalidate the candidate. Each selected source/architecture stage must actually succeed; a skipped or neutral Actions check is not product validation. Server-side required-check configuration and the workflow result are separate controls and must be checked together. The [external contribution reception procedure](../CONTRIBUTING.md#ci-eligibility-and-external-contributions) describes non-member Fork handling; rerunning a rejected Fork does not change author membership. This contract adds no approval quota or particular review bot.
 
-App keys and short-lived control tokens remain confined to trusted admission/finalization and release-control jobs. Product/helper builds, source checks, preparation and E2E never receive the App key. Candidate execution uses fresh standard jobs. Public release sources are retrieved by selected tag; candidate branch/PR refs are admitted against automatically observed identities and transported as fixed run artifacts. Checkouts retain no credentials; the narrowly scoped Actions token is used only in trusted API/download steps. Publish has its own job and write permission.
+App keys and short-lived control tokens remain confined to trusted admission/finalization and release-control jobs. Product/helper builds, source checks, preparation and E2E never receive the App key. Candidate execution uses fresh hosted jobs or a fresh owned Workbench instance for a supplemental E2E group. Public release sources are retrieved by selected tag; candidate branch/PR refs are admitted against automatically observed identities and transported as fixed run artifacts. Checkouts retain no credentials; the narrowly scoped Actions token is used only in trusted API/download steps. Publish has its own job and write permission.
 
 Atomic changes can declare reciprocal companions in the existing PR-body marker:
 
@@ -35,6 +35,8 @@ A marker occurs at most once and lists each allowed repository once. Companions 
 ## 2. Exact baseline and affected products
 
 `source` mode resolves one published, validated aggregate through the maintained `releases/daily-preview.yaml` for mainline, or `releases/release.yaml` for a maintenance line. Only that selection or its declared predecessor can recover an interrupted publication. The plan binds its tag commit, six independent unit versions/SHAs, release/asset IDs, sizes, digests and successful aggregate validation. New dual aggregates also bind their declared profiles and exact validated asset hashes in release notes.
+
+When the maintained aggregate is not yet published, the explicit predecessor remains the validated binary baseline. The trusted admission base's manifest may also select newer component tags. Every differing tag must already have a complete dual-architecture publication with exact tag/commit, size and digest metadata. CI transports those exact tagged sources, rebuilds their products and linked or embedded consumers, and uses their test-owner trees before applying admitted candidate and companion sources. Candidate manifests cannot select these tags; incomplete publications and mixed requirement generations still fail. Runtime and kernel tags remain independent, and a runtime tag change never selects a kernel rebuild by itself.
 
 Missing baseline/ARM assets fail resolution with an explicit initialization requirement. The resolver never assembles component Latest versions or falls back to a full source build. Historical AMD64-only releases remain valid historical releases; they are not a dual baseline. See [first ARM initialization](release.md#first-arm-initialization).
 
@@ -83,6 +85,67 @@ outer binary. The trusted reader selects this contract from flatten-ctl's linked
 external go-erofs module record without executing the binary or requiring Go.
 Host runtime packing, independent fsck and native control tests retain their tools.
 
+### Capability-based E2E allocation
+
+Plan schema 4 separates the required case selection from execution placement.
+It discovers headers from all six selected owner trees and freezes case hashes,
+requirements, the trusted `ci/integration/runner-capabilities.json` configuration,
+its digest, executor image IDs, run/attempt and deterministic groups. Existing
+schema 2/3 plans and published results keep their original ARM selection and
+Workbench qualification meanings.
+
+A profile declares architecture, runner labels, executor, resource budget,
+priority, enabled state and evidence for every capability. `supported` satisfies
+a requirement; `unsupported` records a known gap; `unknown` does neither. Among
+profiles satisfying every requirement, public runners take precedence, then
+priority and profile ID break ties. Every supplemental placement records at
+least one known unsupported requirement for **each** enabled public candidate.
+An unknown-only public candidate blocks allocation. Disabled or unavailable
+resources do not make required cases optional. Case metadata cannot set labels,
+images, commands, priority or credentials. Runtime-only containers cannot satisfy
+`systemd` or `journald`, even when the enclosing host can.
+
+Groups are formed by profile, suite and effective runtime. Their disjoint union
+must equal the ordinary suite-selected cases, excluding credentialed OBS unless
+explicitly requested. Public build, helper, prepare, source and performance jobs
+retain their allocation. Both source and exact-assets modes prepare the union
+once on public infrastructure. Preparation exports its already built runtime
+image and binds the compressed archive digest; execution verifies the archive
+and image config before loading it. No execution group rebuilds products.
+
+Supplemental groups use the existing Workbench system launcher. Host Actions
+steps verify and transport fixed inputs, then run the existing public E2E entry
+inside the owned instance. Storage, snapshot and ARM image groups retain a
+nested runtime-only container with no compilers or component source trees.
+Each group gets a fresh temporary download/prepared/result directory and a unique
+Workbench instance name, including on a reused self-hosted machine. Diagnostics
+are uploaded before retained task files are deleted. Runner credentials and host
+Docker sockets are not mounted into Workbench.
+Startup capability checks run in the effective runtime, and results bind actual
+runner name/OS/architecture/environment, run/attempt, profile/configuration,
+prepared provenance and executor image. The architecture and final gates require
+every nonempty group; failure, cancellation, missing results or identity changes
+cannot become success. Empty groups allocate no runner and claim no E2E.
+Partial reruns reuse successful artifacts only for the same immutable plan and
+workflow run. Receipts retain their actual producer attempt; a new failed or
+cancelled execution prevents collection even if an earlier result exists.
+
+The existing same-repository framework PR entry resolves companion declarations
+from its admitted event using read-only public metadata. It uses the same live
+merge/head/base and branch checks before execution and final acceptance; caller-
+supplied companion records remain forbidden on that entry.
+
+Requirements must first be present in the selected component versions. A mixed
+old/new source set fails instead of treating absent declarations as empty.
+Wholly historical inputs retain the historical plan path; after a schema 4
+baseline, requirement generation cannot be downgraded. Before activating a
+capability marked `unknown`, record real product acceptance through the existing
+prepare/run flow and update its evidence in the trusted configuration. There is
+no recurring capability-probe matrix or automatic failure fallback. Combined
+E2E coverage does not change artifact-only or single-instance native-full
+Workbench qualification. See [runner integration](../ci/runner/README.md#capability-e2e-runners)
+and [case declarations](../test/README.md#static-execution-requirements).
+
 ## 3. Independent architecture lifecycles
 
 ```text
@@ -117,7 +180,7 @@ The complete source gate runs in an independent Workbench system instance on nat
 
 CI supplies root privileges and the trusted tool path directly when launching selected prepared cases. Only explicit prepared inputs cross `sudo`, including the private state directory; execution does not consult a generated owner-runner registry.
 
-All nonempty lanes prepare inside a runtime-only container with no Go, Rust or C/C++ compilers and no component source trees. The full storage and snapshot suites also execute there, covering non-KVM and KVM contracts; applicable native ARM image cases use the same boundary. Cases requiring host systemd retain their native-host job. Trusted preflight and result records bind the immutable runtime image ID and the verified absence of compilers/source trees; static zero-case lanes do not count as product acceptance. Container inputs are read-only and mutable case/output directories are separate.
+All nonempty lanes prepare inside a runtime-only container with no Go, Rust or C/C++ compilers and no component source trees. The full storage and snapshot suites also execute there, covering non-KVM and KVM contracts; applicable native ARM image cases use the same boundary. Cases requiring systemd run on the selected native host or in the selected Workbench system instance. Trusted preflight and result records bind the immutable runtime image ID and the verified absence of compilers/source trees; static zero-case lanes do not count as product acceptance. Container inputs are read-only and mutable case/output directories are separate.
 
 Failures in `snapshot.read-recovery.sh` retain the case, phase, failing line and bounded fixed-vocabulary error evidence in the job log before cleanup. Diagnostics preserve the original test exit status.
 
@@ -230,9 +293,9 @@ evidence merely to obtain a benchmark.
 
 ## 4. Daily and Stable
 
-`exact-assets` is callable only by the actual public platform aggregate workflow. Its plan binds the exact committed manifest and staged fourteen-file asset set (platform + twelve component archives + SHA256SUMS). It selects no product or helper rebuilds. Each target uses the same download/compose/public-prepare/public-run/result primitives as PR mode and consumes the prebuilt helper packages from the exact staged platform archive. The separate required source checks remain outside artifact E2E.
+`exact-assets` is callable only by the actual public platform aggregate workflow. Its plan binds the exact committed manifest and complete staged asset set (platform, component archives, Workbench images and SHA256SUMS). It selects no product or helper rebuilds. Each target uses the same download/compose/public-prepare/public-run/result primitives as PR mode and consumes the prebuilt helper packages from the exact staged platform archive. The separate required source checks remain outside artifact E2E.
 
-Publish verifies both successful architecture results against the staged digests and publishes the original archives unchanged. Component material/license/source identity validation, trusted publisher notes and version immutability remain required. ARM's non-KVM scope is recorded before execution and in the aggregate validation binding; it is never presented as full VM parity.
+Publish verifies both successful architecture results against the staged digests and publishes the original archives unchanged. Component material/license/source identity validation, trusted publisher notes and version immutability remain required. The exact ARM selection and capability groups are recorded before execution and in the aggregate validation binding. Historical non-KVM evidence remains limited to its original scope.
 
 ## 5. Native cache
 
@@ -302,3 +365,7 @@ Accelerator, connector, sandboxer and orchestrator are Public; visibility and an
 - [Deployment](deployment.md): runtime services and capabilities.
 - [Runner operations](../ci/runner/README.md): existing persistent infrastructure.
 - [Test quick start](../test/QUICKSTART.md): developer E2E prerequisites.
+
+Supplemental self-hosted E2E restores its fixed sparse executor from a small same-run capsule produced by the trusted resolve job. Git packs the original commit, tree and blob objects into a fresh repository with no copied remote configuration or credentials; export attributes cannot rewrite or omit tracked bytes. The resolver passes the archive SHA-256 and expected Git tree through workflow outputs. Before any capsule code runs, bootstrap verifies that hash and the exact workflow SHA; restoration then checks the commit/tree, all Git objects, clean tracked files and unchanged sparse scope. Symlinks, gitlinks, special modes, oversized archives and unsafe paths fail closed. The pinned official download action has a five-minute bootstrap limit and restoration has three minutes. Hosted E2E retains its normal checkout. This avoids repeated Git connections and lazy fetches on supplemental runners; prepared products still use the bounded local downloader below.
+
+Artifact acquisition in the architecture jobs uses the local same-run download action. Each attempt has a 600-second wall-clock deadline starting before metadata resolution and covering response headers, transfer, compressed SHA-256 verification and extraction. At most three attempts use fresh signed URLs, connections and private directories, with 15/30-second backoff. Artifact IDs, producing jobs, sizes and digests are frozen after the first successful metadata response. Authentication, certificate, identity, digest, archive and unknown errors stop immediately; only typed transient transport failures and deadlines retry. Cancellation kills and reaps the worker before cleanup, and a verified directory is promoted only after the complete selection succeeds. The step limit is 35 minutes; existing overall job deadlines still apply. Logs contain phase, attempt and elapsed time, never runtime tokens or signed URLs. The Node entry receives the runner-provided same-run identity and invokes Python standard-library code, without installing packages or widening workflow permissions.

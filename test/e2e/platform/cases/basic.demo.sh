@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# e2e-requires: ["bpf-map","bpf-tc","cgroup-v2","docker","kvm","netns","systemd","tun","userfaultfd"]
 # The documented Demo against prepared products, image and Python SDK.
 set -euo pipefail
 umask 077

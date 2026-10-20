@@ -151,6 +151,10 @@ sources = pathlib.Path(sys.argv[2])
 for owner, row in helper_contract('a' * 40, '1' * 40)['owners'].items():
     if owner == 'platform': continue
     source = sources / ('runtime' if owner == 'guest-runtime' else owner)
+    (source / 'test/e2e/lib/requirements.json').write_text('{"schema":1}\n')
+    for case in (source / 'test/e2e/cases').glob('*.sh'):
+        first, rest = case.read_text().split('\n', 1)
+        case.write_text(first + '\n# e2e-requires: []\n' + rest)
     (source / 'release').mkdir(exist_ok=True)
     (source / 'release/helper-inputs.json').write_text(row['declaration'])
     import json

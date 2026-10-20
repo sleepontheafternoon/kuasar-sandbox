@@ -189,6 +189,10 @@ test:
 	@for r in $(GO_REPOS); do echo "== test $$r =="; $(MAKE) -C $(ORG)/$$r test || exit 1; done
 
 test-ci-tools:
+	PYTHONDONTWRITEBYTECODE=1 python3 ci/integration/test-framework-companions.py
+	PYTHONDONTWRITEBYTECODE=1 python3 ci/integration/test-capability-routing.py
+	PYTHONDONTWRITEBYTECODE=1 python3 ci/integration/test-download-artifact.py
+	PYTHONDONTWRITEBYTECODE=1 python3 ci/integration/test-executor-transport.py
 	PYTHONDONTWRITEBYTECODE=1 python3 ci/integration/test-actions-jobs.py
 	PYTHONDONTWRITEBYTECODE=1 python3 ci/integration/test-docs-lane.py
 	PYTHONDONTWRITEBYTECODE=1 python3 ci/integration/test-source-inputs.py
@@ -206,6 +210,7 @@ test-ci-tools:
 		PYTHONDONTWRITEBYTECODE=1 python3 ci/integration/test-artifacts.py
 
 test-release-tools:
+	PYTHONDONTWRITEBYTECODE=1 python3 release/test-download-asset.py
 	PYTHONDONTWRITEBYTECODE=1 python3 -B ci/integration/release-source-set.py --sources "$(ORG)" --auto
 	PYTHONDONTWRITEBYTECODE=1 python3 -B ci/integration/test-release-source-set.py
 	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest release/test_tag_selection.py release/test_tag_sources.py
@@ -221,7 +226,7 @@ test-release-tools:
 	PYTHONDONTWRITEBYTECODE=1 python3 test/demo/test_demo_build_selection.py
 	PYTHONDONTWRITEBYTECODE=1 python3 test/demo/test_prepared_demo.py
 	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest release/test_documentation_package.py
-	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest release/preview_selection_test.py
+	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest release/preview_selection_test.py release/test_vmlinux_updates.py
 	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest release/preview_coordinator_test.py
 	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest release/preview_scanner_test.py
 	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest release/preview_gc_test.py
