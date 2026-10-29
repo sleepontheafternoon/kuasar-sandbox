@@ -46,6 +46,179 @@ class FixedInputs(unittest.TestCase):
         self.env = {'GIT_CONFIG_COUNT': '1', 'GIT_CONFIG_KEY_0': f'url.{self.remote}.insteadOf',
                     'GIT_CONFIG_VALUE_0': 'https://github.com/kuasar-sandbox/connector.git'}
 
+    def producer(self):
+        spec = importlib.util.spec_from_file_location('tested_producer', subject.ROOT / 'release/producer-inputs.py')
+        module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+        subject.tag_sources.git(self.remote, 'branch', '-M', 'main')
+        return module
+
+    def admit_producer(self, producer, sha=None, source_ref='main', version='v1.2.3', name='admission.tar'):
+        archive = self.root / name
+        with patch.dict(os.environ, self.env):
+            producer.admit('connector', source_ref, sha or self.sha, version,
+                           'kuasar-sandbox/connector', archive)
+        return archive
+
+    def test_producer_historical_commit_survives_branch_advance_and_remote_removal(self):
+        producer = self.producer(); git = subject.tag_sources.git
+        before = git(self.remote, 'ls-tree', '-r', self.sha)
+        (self.remote / 'newer-helper.py').write_text('must not fill an old contract\n')
+        (self.remote / 'README.md').write_text('new docs must not replace selected docs\n')
+        git(self.remote, 'add', '.'); git(self.remote, 'commit', '-qm', 'new main')
+        admitted_tip = git(self.remote, 'rev-parse', 'HEAD')
+        admission = self.admit_producer(producer)
+        git(self.remote, 'commit', '--allow-empty', '-qm', 'advance after admission')
+        shutil.rmtree(self.remote)
+        capsule = self.root / 'producer.tar'
+        with patch.object(subject, 'fetch_named', side_effect=AssertionError('must not refetch')):
+            producer.freeze('connector', 'main', self.sha, [], capsule, admission, 'v1.2.3')
+        transport = self.root / 'inspect'; subject.transport.extract(capsule, transport)
+        receipt = json.loads((transport / 'producer-records.json').read_text())
+        self.assertEqual(receipt['admission']['source']['admitted_tip'], admitted_tip)
+        self.assertEqual(receipt['admission']['source']['mode'], 'first-parent')
+        self.assertEqual(receipt['admission']['control'], producer.producer_sources.control_identity())
+        for arch in artifacts.ARCHES:
+            target = self.root / arch
+            producer.restore(capsule, 'connector', self.sha, target)
+            self.assertEqual(git(target / 'connector', 'ls-tree', '-r', 'HEAD'), before)
+            self.assertFalse((target / 'connector/newer-helper.py').exists())
+            self.assertEqual(git(target / 'connector', 'branch', '--show-current'), '')
+
+    def test_producer_accepts_head_and_matching_maintenance_history(self):
+        producer = self.producer(); git = subject.tag_sources.git
+        git(self.remote, 'branch', 'release/v1.2.x')
+        for ref in ('main', 'release/v1.2.x'):
+            with self.subTest(ref=ref):
+                archive = self.admit_producer(producer, source_ref=ref, name=ref.replace('/', '-') + '.tar')
+                output = self.root / ref.replace('/', '-')
+                subject.transport.extract(archive, output)
+                record = json.loads((output / 'admission.json').read_text())['source']
+                self.assertEqual(record['source_ref'], ref)
+                self.assertEqual(record['admitted_tip'], self.sha)
+
+    def test_producer_cli_admits_all_six_unit_names(self):
+        producer = self.producer()
+        for unit in artifacts.UNITS:
+            with self.subTest(unit=unit):
+                repository = subject.tag_sources.repository(unit)
+                version = (unit + '-' if unit in ('runtime', 'vmlinux') else '') + 'v1.2.3'
+                archive = self.root / (unit + '.tar')
+                environment = {**os.environ, **self.env,
+                               'GIT_CONFIG_VALUE_0': 'https://github.com/' + repository + '.git'}
+                subprocess.run([sys.executable, '-B', producer.__file__, 'admit', unit, 'main',
+                                self.sha, version, repository, str(archive)], env=environment, check=True)
+                target = self.root / unit
+                subject.transport.extract(archive, target)
+                record = json.loads((target / 'admission.json').read_text())['source']
+                self.assertEqual(record['unit'], unit)
+                self.assertEqual(record['repository'], repository)
+                self.assertEqual(record['version'], version)
+
+    def test_historical_producer_keeps_exact_dependency_tags(self):
+        producer = self.producer(); admission = self.admit_producer(producer)
+        dependency = self.root / 'dependency'
+        sha = fixture(dependency, 'accelerator', 'v1.2.3')
+        subject.tag_sources.git(dependency, 'tag', 'v1.2.4')
+        env = {**self.env, 'GIT_CONFIG_COUNT': '2', 'GIT_CONFIG_KEY_1': f'url.{dependency}.insteadOf',
+               'GIT_CONFIG_VALUE_1': 'https://github.com/kuasar-sandbox/accelerator.git'}
+        capsule = self.root / 'producer.tar'
+        with patch.dict(os.environ, env):
+            producer.freeze('connector', 'main', self.sha, [('accelerator', 'v1.2.3', sha)],
+                            capsule, admission, 'v1.2.3')
+        shutil.rmtree(self.remote); shutil.rmtree(dependency)
+        producer.restore(capsule, 'connector', self.sha, self.root / 'exact', [('accelerator', 'v1.2.3', sha)])
+        for dependencies in ([], [('accelerator', 'v1.2.4', sha)], [('accelerator', 'v1.2.3', 'f' * 40)]):
+            with self.subTest(dependencies=dependencies), self.assertRaisesRegex(ValueError, 'differs from preflight'):
+                producer.restore(capsule, 'connector', self.sha, self.root / 'bad', dependencies)
+
+    def test_producer_rejects_side_parent_even_when_reachable_from_merge(self):
+        producer = self.producer(); git = subject.tag_sources.git
+        git(self.remote, 'checkout', '-qb', 'side')
+        (self.remote / 'side').write_text('side')
+        git(self.remote, 'add', '.'); git(self.remote, 'commit', '-qm', 'side')
+        side = git(self.remote, 'rev-parse', 'HEAD')
+        git(self.remote, 'checkout', '-q', 'main')
+        git(self.remote, 'merge', '--no-ff', '-qm', 'merge side', 'side')
+        with self.assertRaisesRegex(ValueError, 'first-parent'):
+            self.admit_producer(producer, sha=side)
+        self.assertFalse((self.root / 'admission.tar').exists())
+
+    def test_producer_rejects_unrelated_or_missing_commit(self):
+        producer = self.producer(); git = subject.tag_sources.git
+        git(self.remote, 'checkout', '--orphan', 'unrelated')
+        git(self.remote, 'commit', '-qm', 'unrelated root')
+        unrelated = git(self.remote, 'rev-parse', 'HEAD')
+        for sha in (unrelated, 'f' * 40):
+            with self.subTest(sha=sha), self.assertRaisesRegex(ValueError, 'first-parent'):
+                self.admit_producer(producer, sha=sha)
+
+    def test_producer_request_validation_all_units_and_negative_cases(self):
+        producer = self.producer(); validate = producer.producer_sources.validate_request
+        for unit in artifacts.UNITS:
+            prefix = unit + '-' if unit in ('runtime', 'vmlinux') else ''
+            repo = subject.tag_sources.repository(unit)
+            for suffix in ('', '-preview.20261026', '-preview.20261026.2'):
+                validate(unit, 'main', self.sha, prefix + 'v1.2.3' + suffix, repo)
+                validate(unit, 'release/v1.2.x', self.sha, prefix + 'v1.2.3' + suffix, repo)
+        invalid = [
+            ('connector', 'main', self.sha, 'v1.2.3', 'kuasar-sandbox/sandboxer'),
+            ('platform', 'main', self.sha, 'v1.2.3', 'kuasar-sandbox/kuasar-sandbox'),
+            ('connector', 'refs/heads/main', self.sha, 'v1.2.3', 'kuasar-sandbox/connector'),
+            ('connector', 'refs/pull/1/merge', self.sha, 'v1.2.3', 'kuasar-sandbox/connector'),
+            ('connector', 'release/v01.2.x', self.sha, 'v1.2.3', 'kuasar-sandbox/connector'),
+            ('connector', 'release/v1.2.x', self.sha, 'v1.3.0', 'kuasar-sandbox/connector'),
+            ('connector', 'main', 'HEAD', 'v1.2.3', 'kuasar-sandbox/connector'),
+            ('connector', 'main', 'A' * 40, 'v1.2.3', 'kuasar-sandbox/connector'),
+            ('connector', 'main', self.sha, 'runtime-v1.2.3', 'kuasar-sandbox/connector'),
+        ]
+        for request in invalid:
+            with self.subTest(request=request), self.assertRaises(ValueError): validate(*request)
+
+    def test_producer_missing_branch_does_not_fetch_raw_sha(self):
+        producer = self.producer()
+        with self.assertRaisesRegex(ValueError, 'git fetch failed'):
+            self.admit_producer(producer, source_ref='release/v1.2.x')
+        self.assertFalse((self.root / 'admission.tar').exists())
+
+    def test_producer_archive_rejects_conflicting_request_and_control(self):
+        producer = self.producer(); admission = self.admit_producer(producer)
+        for ref, sha, version in [('main', 'f' * 40, 'v1.2.3'), ('release/v1.2.x', self.sha, 'v1.2.3'),
+                                  ('main', self.sha, 'v1.2.4'), ('main', self.sha, None)]:
+            with self.subTest(ref=ref, sha=sha, version=version), self.assertRaisesRegex(ValueError, 'differs from release request'):
+                producer.freeze('connector', ref, sha, [], self.root / 'bad.tar', admission, version)
+        with patch.object(producer.producer_sources, 'control_identity', return_value={'framework_sha': 'f' * 40}), \
+             self.assertRaisesRegex(ValueError, 'control identity changed'):
+            producer.freeze('connector', 'main', self.sha, [], self.root / 'bad.tar', admission, 'v1.2.3')
+
+    def test_producer_archive_detects_source_or_evidence_tampering(self):
+        producer = self.producer(); admission = self.admit_producer(producer)
+        for field, value in [('tree', 'f' * 40), ('admitted_tip', 'f' * 40), ('mode', 'arbitrary-sha')]:
+            with self.subTest(field=field):
+                root = self.root / field
+                subject.transport.extract(admission, root)
+                receipt = json.loads((root / 'admission.json').read_text())
+                receipt['source'][field] = value
+                (root / 'admission.json').write_text(json.dumps(receipt))
+                bad = self.root / (field + '.tar')
+                with tarfile.open(bad, 'w') as archive:
+                    for path in root.iterdir(): archive.add(path, arcname=path.name)
+                with self.assertRaises(ValueError):
+                    producer.freeze('connector', 'main', self.sha, [], self.root / 'bad.tar', bad, 'v1.2.3')
+        root = self.root / 'dirty'; subject.transport.extract(admission, root)
+        (root / 'source/README.md').write_text('tampered')
+        with tarfile.open(self.root / 'dirty.tar', 'w') as archive:
+            for path in root.iterdir(): archive.add(path, arcname=path.name)
+        with self.assertRaisesRegex(ValueError, 'modified inputs'):
+            producer.freeze('connector', 'main', self.sha, [], self.root / 'bad.tar', self.root / 'dirty.tar', 'v1.2.3')
+
+    def test_historical_producer_does_not_relax_named_ref_admission(self):
+        self.producer(); git = subject.tag_sources.git
+        git(self.remote, 'commit', '--allow-empty', '-qm', 'advance')
+        for ref in ('refs/heads/main', 'refs/pull/23/merge'):
+            git(self.remote, 'update-ref', ref, git(self.remote, 'rev-parse', 'HEAD'))
+            with patch.dict(os.environ, self.env), self.assertRaisesRegex(ValueError, 'identity changed'):
+                subject.fetch_named(self.root / ref.replace('/', '-'), 'kuasar-sandbox/connector', ref, self.sha)
+
     def test_platform_checkout_origin_suffix_and_wrong_repository(self):
         root = self.root / 'platform'
         root.mkdir()
@@ -498,7 +671,23 @@ class MaintainedSelection(unittest.TestCase):
     def test_release_line_uses_maintained_component_minor(self):
         self.run_cutover(base_ref='release/v1.2.x')
 
-    def run_cutover(self, legacy_owner=None, kernel_delta=True, base_ref='main'):
+    def test_complete_modern_baseline_keeps_non_candidate_owners(self):
+        self.run_cutover(complete_baseline=True)
+
+    def test_complete_modern_baseline_keeps_maintenance_admission(self):
+        self.run_cutover(complete_baseline=True, base_ref='release/v1.2.x')
+
+    def test_complete_modern_baseline_preserves_each_candidate_and_companion(self):
+        for owner in artifacts.OWNERS:
+            with self.subTest(owner=owner):
+                self.run_cutover(complete_baseline=True, candidate_owner=owner)
+
+    def test_complete_modern_baseline_rejects_candidate_requirement_downgrade(self):
+        with self.assertRaisesRegex(ValueError, 'mixed E2E requirement generations'):
+            self.run_cutover(complete_baseline=True, candidate_owner='connector', downgrade_candidate=True)
+
+    def run_cutover(self, legacy_owner=None, kernel_delta=True, base_ref='main', complete_baseline=False,
+                    candidate_owner='platform', downgrade_candidate=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             git = subject.tag_sources.git
@@ -519,6 +708,10 @@ class MaintainedSelection(unittest.TestCase):
                 (e2e / 'cases').mkdir(parents=True)
                 for name in CASES[owner]: (e2e / 'cases' / name).write_text('echo historical\n')
                 declare_fixture(repo, owner)
+                if complete_baseline:
+                    (e2e / 'lib').mkdir(exist_ok=True)
+                    (e2e / 'lib/requirements.json').write_text('{"schema":1}\n')
+                    for name in CASES[owner]: (e2e / 'cases' / name).write_text('# e2e-requires: []\necho baseline\n')
                 if owner == 'guest-runtime':
                     (repo / 'native-deps').mkdir(exist_ok=True)
                     (repo / 'native-deps/Makefile').write_text('vmlinux: old-kernel-input\n')
@@ -565,32 +758,89 @@ class MaintainedSelection(unittest.TestCase):
             candidate = git(platform, 'rev-parse', 'HEAD')
             git(platform, 'update-ref', 'refs/pull/23/merge', candidate)
             git(platform, 'update-ref', 'refs/heads/' + base_ref, platform_base)
-            companion = repos['orchestrator']
-            (companion / 'test/e2e/cases' / CASES['orchestrator'][0]).write_text('# e2e-requires: []\necho companion\n')
+            candidate_base = platform_base
+            if candidate_owner != 'platform':
+                primary = repos[candidate_owner]
+                candidate_base = git(primary, 'rev-parse', 'HEAD')
+                e2e = primary / 'test/e2e'
+                (e2e / 'cases' / CASES[candidate_owner][0]).write_text('# e2e-requires: []\necho candidate\n')
+                if downgrade_candidate:
+                    (e2e / 'lib/requirements.json').unlink()
+                    for name in CASES[candidate_owner]:
+                        (e2e / 'cases' / name).write_text('echo legacy candidate\n')
+                git(primary, 'add', '.'); git(primary, 'commit', '-qm', 'candidate test')
+                candidate = git(primary, 'rev-parse', 'HEAD')
+                git(primary, 'update-ref', 'refs/pull/23/merge', candidate)
+            companion_owner = 'sandboxer' if candidate_owner == 'orchestrator' else 'orchestrator'
+            companion = repos[companion_owner]
+            companion_base = git(companion, 'rev-parse', 'HEAD')
+            (companion / 'test/e2e/cases' / CASES[companion_owner][0]).write_text('# e2e-requires: []\necho companion\n')
             git(companion, 'commit', '-qam', 'companion test')
             companion_sha = git(companion, 'rev-parse', 'HEAD')
             git(companion, 'update-ref', 'refs/pull/24/merge', companion_sha)
-            env.update(CANDIDATE_REPOSITORY=resolver.PLATFORM, CANDIDATE_PR='23', CANDIDATE_SHA=candidate,
-                       CANDIDATE_BASE_SHA=platform_base, CANDIDATE_HEAD_SHA=candidate, CANDIDATE_BASE_REF=base_ref,
-                       COMPANION_CANDIDATES=json.dumps([{'repository': resolver.REPOSITORIES['orchestrator'],
-                           'pull_request_number': 24, 'base_ref': base_ref, 'base_sha': shas['orchestrator'],
+            env.update(CANDIDATE_REPOSITORY=resolver.REPOSITORIES[candidate_owner], CANDIDATE_PR='23', CANDIDATE_SHA=candidate,
+                       CANDIDATE_BASE_SHA=candidate_base, CANDIDATE_HEAD_SHA=candidate, CANDIDATE_BASE_REF=base_ref,
+                       COMPANION_CANDIDATES=json.dumps([{'repository': resolver.REPOSITORIES[companion_owner],
+                           'pull_request_number': 24, 'base_ref': base_ref, 'base_sha': companion_base,
                            'head_sha': companion_sha, 'candidate_sha': companion_sha}]))
             original = copy.deepcopy(baseline)
+            if complete_baseline:
+                baseline['validation_plan'] = {'schema': 4}
+                original = copy.deepcopy(baseline)
             def state(path):
                 unit = next(unit for unit, tag in maintained.items() if path.endswith('/' + tag)
                             and path.split('/')[2] == resolver.REPOSITORIES[resolver.unit_owner(unit)].split('/')[1])
                 return self.release_state(unit, maintained[unit], shas[unit])
             with patch.dict(os.environ, env), patch.object(resolver, 'public'), \
                  patch.object(resolver, 'baseline', return_value=baseline), \
+                 patch.object(resolver.release, 'branch_sha', return_value=platform_base), \
                  patch.object(resolver.release, 'api_optional', side_effect=state), \
                  patch.object(resolver.release, 'tag_sha', side_effect=lambda repo, tag: shas[next(unit for unit in maintained if maintained[unit] == tag and resolver.REPOSITORIES[resolver.unit_owner(unit)] == repo)]):
                 plan = resolver.source_plan('a' * 40, root / 'admitted')
             self.assertEqual(baseline, original)
             self.assertEqual(plan['schema'], 4)
             self.assertEqual(plan['baseline'], original)
+            if complete_baseline:
+                self.assertEqual(plan['maintained_deltas'], {})
+                if candidate_owner != 'guest-runtime':
+                    self.assertEqual(plan['kernel_sha'], baseline['units']['vmlinux']['sha'])
+                admitted = {candidate_owner: (candidate, 'candidate'), companion_owner: (companion_sha, 'companion')}
+                for owner in artifacts.OWNERS:
+                    if owner in admitted:
+                        sha, role = admitted[owner]
+                        self.assertEqual(plan['sources'][owner]['sha'], sha)
+                        self.assertEqual(plan['sources'][owner]['role'], role)
+                        self.assertEqual(plan['test_revisions'][owner], plan['sources'][owner])
+                        self.assertEqual(plan['run_inputs']['candidates/' + owner]['sha'], sha)
+                        continue
+                    unit = 'runtime' if owner == 'guest-runtime' else owner
+                    expected = platform_base if owner == 'platform' else baseline['units'][unit]['sha']
+                    self.assertEqual(plan['sources'][owner]['sha'], expected)
+                    self.assertEqual(plan['test_revisions'][owner]['sha'], expected)
+                self.assertEqual(set(plan['owners']), set(admitted))
+                for product, dependencies in plan['product_sources'].items():
+                    for repository, sha in dependencies.items():
+                        owner = next(owner for owner in artifacts.OWNERS if resolver.REPOSITORIES[owner] == repository)
+                        self.assertEqual(sha, plan['kernel_sha'] if product == 'vmlinux' else plan['sources'][owner]['sha'])
+                for unit, row in plan['source_records'].items():
+                    self.assertEqual(row['tag'], baseline['units'][unit]['version'])
+                    self.assertEqual(row['sha'], baseline['units'][unit]['sha'])
+                artifacts.check_plan(plan)
+                return
             self.assertEqual(plan['kernel_sha'], shas['vmlinux'])
             self.assertNotEqual(plan['kernel_sha'], plan['sources']['guest-runtime']['sha'])
             self.assertEqual(plan['test_revisions']['orchestrator']['sha'], companion_sha)
+            # Joint qualification must retain the admitted consumer test source
+            # and the selected dependency tuple; a rebuilt consumer is not an
+            # authorization to substitute another owner main or test revision.
+            self.assertEqual(plan['sources']['orchestrator']['sha'], companion_sha)
+            for owner, unit in (('accelerator', 'accelerator'), ('sandboxer', 'sandboxer'),
+                                ('guest-runtime', 'runtime')):
+                self.assertEqual(plan['sources'][owner]['sha'], shas[unit])
+                self.assertEqual(plan['test_revisions'][owner]['sha'], shas[unit])
+                self.assertEqual(plan['product_sources']['sandbox-runtime.bundle'][resolver.REPOSITORIES[owner]], shas[unit])
+            for owner in ('accelerator', 'sandboxer'):
+                self.assertEqual(plan['product_sources']['node-ctl'][resolver.REPOSITORIES[owner]], shas[owner])
             self.assertIn('source-change.txt', plan['changes']['orchestrator'])
             self.assertEqual(set(plan['maintained_deltas']), set(artifacts.UNITS) - (set() if kernel_delta else {'vmlinux'}))
             for unit, row in plan['source_records'].items():

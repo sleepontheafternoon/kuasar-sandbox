@@ -189,12 +189,15 @@ test:
 	@for r in $(GO_REPOS); do echo "== test $$r =="; $(MAKE) -C $(ORG)/$$r test || exit 1; done
 
 test-ci-tools:
+	PYTHONDONTWRITEBYTECODE=1 python3 ci/integration/test-dependency-cutover.py
 	PYTHONDONTWRITEBYTECODE=1 python3 ci/integration/test-framework-companions.py
 	PYTHONDONTWRITEBYTECODE=1 python3 ci/integration/test-capability-routing.py
 	PYTHONDONTWRITEBYTECODE=1 python3 ci/integration/test-download-artifact.py
+	PYTHONDONTWRITEBYTECODE=1 python3 ci/integration/test-artifact-cache.py
 	PYTHONDONTWRITEBYTECODE=1 python3 ci/integration/test-executor-transport.py
 	PYTHONDONTWRITEBYTECODE=1 python3 ci/integration/test-actions-jobs.py
 	PYTHONDONTWRITEBYTECODE=1 python3 ci/integration/test-docs-lane.py
+	PYTHONDONTWRITEBYTECODE=1 python3 ci/integration/test-manifest-lane.py
 	PYTHONDONTWRITEBYTECODE=1 python3 ci/integration/test-source-inputs.py
 	bash ci/integration/test-ci-tools.sh
 	PYTHONDONTWRITEBYTECODE=1 python3 ci/integration/test-source-owner.py
@@ -203,6 +206,8 @@ test-ci-tools:
 	PYTHONDONTWRITEBYTECODE=1 python3 test/e2e/test_offline_inputs.py
 	PYTHONDONTWRITEBYTECODE=1 python3 workbench/test_workbench.py
 	PYTHONDONTWRITEBYTECODE=1 python3 ci/hosted/test-workbench-security.py
+	PYTHONDONTWRITEBYTECODE=1 python3 ci/hosted/test-image-identity.py
+	PYTHONDONTWRITEBYTECODE=1 python3 ci/hosted/test-image-store-probe.py
 	PYTHONDONTWRITEBYTECODE=1 python3 ci/hosted/test-cache-scope.py
 	PYTHONDONTWRITEBYTECODE=1 python3 ci/hosted/test-cache-coverage.py
 	PYTHONDONTWRITEBYTECODE=1 python3 test/e2e/platform/lib/test_failure_diagnostics.py

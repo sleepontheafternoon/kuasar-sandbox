@@ -51,12 +51,16 @@ finalize 才能成功；skip/cancel/failure 不能成为合并依据。
 
 ## 2. 精确基线与受影响产品
 
+产品影响选测也包含消费者：accelerator/runtime 改动若重建 `flatten-ctl`，增加 telemetry 用例；sandboxer 库改动若重建 `node-ctl`，增加 `orchestrator.resource-*`。这些用例使用 plan 固定的测试 owner revision 和匹配能力的 lane，不另选 main。需要原子验证的测试脚本/依赖修复使用上文双向 companion 声明，明确联合候选源码集合。
+
 `source` 模式从主线维护的 `releases/daily-preview.yaml`、或维护线的 `releases/release.yaml`
 选择一个已发布且通过声明验证范围的 aggregate。仅允许当前选择或显式前驱恢复中断发布。
 plan 固定 aggregate tag commit、六个独立 unit 的版本/SHA、Release/asset ID、大小、摘要和成功的聚合 run。
 新双架构 aggregate 的发布说明还绑定验证 profile 与真实制品摘要。
 
-当前维护的 aggregate 尚未发布时，显式前驱仍是经过验证的二进制基线。可信准入 base 的清单也可以选择更新的组件 tag；每个差异 tag 必须已有完整双架构发布，并具备精确 tag/commit、大小和摘要元数据。CI 运输这些固定 tag 的源码，重建其产品及链接或内嵌消费者，使用对应测试 owner 的文件树，然后叠加已准入候选与 companion 源码。候选清单不能选择这些 tag；不完整发布和混合需求代际仍然失败。runtime 与 kernel tag 保持独立，仅改变 runtime tag 不会选择内核重建。
+当前维护的 aggregate 尚未发布时，显式前驱仍是经过验证的二进制基线。对于已完整验收的 schema 4 聚合，普通源码 PR 的非候选产品、测试与 helper 均保留该聚合选定的 owner tag；待发布清单不替换这个已验收组合。已准入候选与 companion 仍按原有产品及消费端覆盖规则叠加。新发布组合必须通过独立的 aggregate exact-assets 门禁，才能成为基线。
+
+已认证聚合证据早于 schema 4 时，历史能力迁移保留现有 maintained-tag 路径。每个差异 tag 仍须已有完整双架构发布及精确 tag/commit、大小和摘要元数据，CI 运输这些固定源码并重建产品及消费者。候选清单不能选择这些 tag 或兼容模式；不完整发布、混合需求代际及需求降级仍然失败。runtime 与 kernel 保持独立。
 
 基线或 ARM 资产缺失时明确失败并要求初始化。不会拼接组件 Latest，也不会回退全源码构建。
 历史 AMD64-only 发布仍是合法历史发布，只是不满足双架构基线。
@@ -68,16 +72,25 @@ runtime 与 vmlinux 保持独立源码身份，kernel 继续复用已有 Makefil
 orchestrator 的 `app/`、`config/` 是产品输入；文档或测试专属变化不选择组件产品。
 
 build 可获取 local Go replacement 所需的精确库源码，但不会因此重建所有 sibling 独立 CLI。
+
+tarstream 载体变更还会使用选定的 accelerator 源码重建 `sandbox-ctl` 和 `node-ctl`。新编码载体的读取端必须链接同一库输入；这不会选择 sandboxer 的存储功能或改变其源码版本。
+
+sandboxer 库变更同样会重建 `node-ctl`，因为其管理和发布路径需要读取 Checkpoint 元数据；orchestrator 的源码选择保持不变。工作集测试将 raw ext4 镜像作为 `diff_template` 输入，并保持活动 `diff` 输出尚不存在；恢复时由已捕获的磁盘图创建输出。新建活动文件遵循选定的加密策略，因此本地 `off`/`auto` 耗时对照包含活动文件和载体的成本。
+
 未修改产品的 hash 必须等于下载基线；候选产品 hash 必须等于本轮真实 build 输出。
 不要求任意旧编排源码重建与基线天然字节相同。 Guest init 身份按已校验 Runtime 内嵌载荷核对；候选 init 必须进入该载荷，未变基线 Runtime 则保留原内嵌字节。
 
-### 大型下载之前的文档验收
+### 大型下载之前的文档与发布清单验收
 
-源码 PR 解析首先比较主仓和每个已准入关联仓库精确 base、head 与 integration 提交的完整 Git 文件树。只有 `README{,_zh}.md`、`test/e2e/README{,_zh}.md`、`docs/` 和 `test/e2e/guides/` 内普通 `100644` Markdown 修改可走文档路径；platform 另允许 `workbench/README{,_zh}.md`、`ci/runner/README{,_zh}.md` 和 `test/demo/DEMO{,_zh}.md`。混合代码、未知仓库/路径、模式变化、符号链接、截断的树响应和空差异保留完整 CI。缺失精确 commit/tree 身份会使准入失败，不能据此跳过检查。
+源码 PR 解析比较主仓和每个已准入 companion 精确 base、head 与 integration 提交的完整 Git 树。`docs` 档仅允许 `README{,_zh}.md`、`test/e2e/README{,_zh}.md`、`docs/` 和 `test/e2e/guides/` 内普通 `100644` Markdown；platform 另允许 `workbench/README{,_zh}.md`、`ci/runner/README{,_zh}.md` 和 `test/demo/DEMO{,_zh}.md`。`manifest` 档仅增加 platform 的 `releases/release.yaml` 与 `releases/daily-preview.yaml`；可组合上述白名单文档，并执行两类检查。任何候选混入源码、CI/workflow、发布工具、测试、运行配置、未知路径/仓库或非普通文件都保留 full。截断树与空差异也保留 full；缺失精确身份则失败。删除维护清单会使双文件检查失败，未变的 symlink 也不能作为另一份清单输入。
 
-分类政策和检查执行器来自 platform 的可信基线；存在 platform 关联候选时使用其 base。候选不能将自身加入白名单。上线期间，尚不含该执行器的基线仍执行完整 CI。分类在基线资产、源码归档和构建环境下载前进行，只读取树元数据和 Markdown/引用上下文，不执行候选代码。共享 `ci/check_docs.py` 规则检查 UTF-8、本地链接和锚点、双语互链与英文默认，已有英文单语文档仍合法。检查修改文档及引用已重命名、删除或修改目标的未变文档，不将无关文档债务暗中扩入本次检查。外部访问和翻译完整性仍需人工验收。
+分类政策和检查代码来自 platform 可信基线；存在 platform companion 时使用其 base。候选不能将自身加入白名单。基线尚无新清单规则时，清单变更仍走 full；候选工作流通过完整 source gate 测试自身契约，因此实现可在启用前得到验证。分类先于基线资产、源码归档与构建环境下载；两类轻量档均不执行候选代码。
 
-原最终判定仅在成功文档证据匹配当前精确源码集、可信政策、run 和 attempt，且重新核对当前 PR/base/head/关联候选准入后，接受有意跳过的重任务。缺失、取消、空或过期证据不能通过。聚合发布验收始终走完整路径。宣称收益前，须记录真实文档/完整 PR 的 Actions 排队、准备和最终反馈时间。实施 PR 修改可执行政策/工作流，因此自身走完整路径。回退从解析入口移除文档分支、恢复完整调度，不放宽源码准入、必需检查或现有语言选择器政策。
+共享 `ci/check_docs.py` 检查 UTF-8、本地链接和锚点、双语互链与英文默认，已有英文单语文档仍合法。检查修改文档及引用已重命名、删除或修改目标的未变文档，不将无关文档债务扩入本次检查。外部访问和翻译完整性仍需人工验收。
+
+清单检查在精确 head 与 merge 上使用现有发布解析器读取两份维护清单，检查字段、unit tag、Stable/Preview 版本、前驱顺序、双文件一致性和维护线归属。复用现有 aggregate reader 验证声明的已发布前驱及已经发布的当前选择。历史 AMD64-only 前驱保留原 x86 验证范围，该比较引用不能作为双架构基线使用；已经发布的当前选择及新声明的 Workbench 发布仍要求完整架构和资产。已发布组件使用现有精确 tag/Release/双架构资产检查。Preview 的源码和依赖绑定仍为必需；已发布依赖改变时，仅当完整源码树中既有链接输入投影一致才可复用消费者。新组件 tag、等待发布的 tag 或 draft 明确记录为待满足发布前提，并保留发布源分支与所选依赖。复用尚未发布的依赖时，记录待执行的链接输入核验。后续发布 coordinator 仍负责冻结未来源码提交并满足这些前提。这是发布计划验证，不表示未来组合已经通过 E2E，也不会在此触发组件发布。
+
+原 finalizer 仅在成功轻量证据匹配当前精确源码集、可信政策、run 和 attempt，且重新核对当前 PR/base/head/companion 准入后，接受有意跳过的重任务。缺失、取消、失败、空或过期证据不能通过。证据保留清单计划、已发布身份与待满足前提。aggregate 的 `exact-assets` 始终保留完整 E2E 和 Workbench 验收。宣称收益前须记录真实 `docs`/`manifest`/`full` Actions 时间。实现 PR 修改可执行政策/工作流，因此自身走 full。回退恢复完整调度，不放宽准入或必需检查。
 
 
 Go EROFS runtime 的 bundle 只需包含 init、envd 和 flatten-ctl，新的聚合制品
@@ -128,6 +141,12 @@ prepare 导出已经构建的运行时镜像并绑定压缩归档摘要；执行
 联合 E2E 覆盖不会改变 artifact-only 或单实例 native-full Workbench 资格。
 参见 [Runner 接入](../ci/runner/README_zh.md#capability-e2e-runners)
 和[用例声明](../test/README_zh.md#静态执行需求)。
+
+### 受审的依赖切换
+
+`ci/integration/dependency-cutovers.json` 默认请求列表为空。仅现有受信 admission **base** 可以启用；候选清单、PR 正文或候选树中的同名文件不能自行授权。每条请求绑定唯一主 PR 的仓库、编号、目标分支及 base/head/integration SHA，以及已经公开完整发布的组件 tag、源码 SHA、Release ID 和完整排序的资产名称/ID/大小/SHA-256 digest。未知字段、重复请求、额外 companion、过期候选、不完整或非公开发布、覆盖候选自身组件均失败关闭。
+
+命中的组件来源通过既有 maintained-delta 路径进入候选组合，重建链接/嵌入的消费者并运行完整 owner source gates 与现有架构能力和凭据排除规则下的 E2E。原聚合仍是已验证的二进制基线，新组合不是已验收聚合；独立 `dependency_cutover` 证据记录受信平台 SHA、配置摘要和精确请求，依赖测试来源使用既有 `release` 角色。最终验收除既有实时候选检查外，还复核当前受信分支仍包含同一请求，tag、Release 和资产身份均未变化；无关请求增补不影响它。实现必须先以空配置通过正常 CI 并合入，再单独审查配置启用。新聚合成为正常基线后删除请求；PR head 改动必须重新审查 pin，不能自动改选。
 
 ## 3. 两条独立架构生命周期
 

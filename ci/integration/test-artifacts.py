@@ -333,6 +333,11 @@ class ArtifactExecutionContracts(unittest.TestCase):
         (self.root / 'bin').mkdir(parents=True)
         source = Path(__file__).resolve().parents[2] / 'test/e2e'
         shutil.copytree(source / 'lib', self.root / 'test/e2e/lib')
+        # Selected cases load the same sealed platform helpers as real workspaces.
+        platform_helpers = self.root / 'test/e2e/lib/platform'
+        platform_helpers.mkdir()
+        for name in ('failure-diagnostics.sh', 'failure_diagnostics.py'):
+            shutil.copy2(source / 'platform/lib' / name, platform_helpers / name)
         shutil.copy2(source / 'e2e', self.root / 'test/e2e/e2e')
         spec = importlib.util.spec_from_file_location('prepared_inputs', source / 'lib/workspace.py')
         self.inputs = importlib.util.module_from_spec(spec)
@@ -974,6 +979,7 @@ class ArtifactContracts(unittest.TestCase):
             binding.bind(self.root, plan, subject.collect_results(plan, results), workbench_results(plan, receipts))
             published = json.loads(resolver.PROFILE_BINDING.search(notes.read_text())[1])
             self.assertEqual(published['validation_plan'], plan)
+            self.assertEqual(published.pop('case_files'), plan['case_files'])
             published['registry'] = registry_binding(version, published['workbench'])
             state = {'tag_name': version, 'target_commitish': sha, 'draft': False, 'prerelease': False,
                      'id': 1, 'assets': [dict(row, id=i, state='uploaded') for i, row in enumerate(plan['baseline']['assets'], 1)]}
@@ -993,8 +999,11 @@ class ArtifactContracts(unittest.TestCase):
                 self.assertEqual(baseline['test_revisions'], plan['test_revisions'])
                 self.assertEqual(baseline['case_files'], WORKBENCH_CASES)
                 retrieve.assert_called_with(resolver.PLATFORM, version, 'releases/release.yaml')
+                legacy = dict(published, case_files=copy.deepcopy(plan['case_files']))
+                notes_from(legacy)
+                self.assertEqual(resolver.aggregate(version)['case_files'], WORKBENCH_CASES)
                 for field in ('case_files', 'source_records', 'validation_plan'):
-                    broken = copy.deepcopy(published)
+                    broken = copy.deepcopy(legacy)
                     if field == 'case_files': broken[field]['orchestrator'] = ['basic.guessed.sh']
                     elif field == 'source_records': broken[field]['runtime']['tree'] = '0' * 40
                     else: broken[field]['framework_sha'] = '0' * 40
@@ -1155,6 +1164,22 @@ class ArtifactContracts(unittest.TestCase):
         self.assertIn("flatten-ctl", products)
         self.assertIn("sandbox-runtime.bundle", products)
         self.assertNotIn("sandbox-ctl", products)
+
+    def test_carrier_changes_rebuild_readers_without_changing_storage_sources(self):
+        products = subject.changed_products({"accelerator": ["pkg/tarstream/write.go"]})
+        for product in ("flatten-ctl", "sandbox-runtime.bundle", "sandbox-ctl", "node-ctl"):
+            self.assertIn(product, products)
+        for product in ("sandbox-init", "cloud-hypervisor", "vmlinux"):
+            self.assertNotIn(product, products)
+        self.assertEqual(subject.changed_products({"accelerator": ["pkg/tarstream/write_test.go"]}), [])
+
+    def test_storage_library_rebuilds_node_checkpoint_reader(self):
+        products = subject.changed_products({"sandboxer": ["pkg/diffstore/checkpoint.go"]})
+        self.assertIn("sandbox-ctl", products)
+        self.assertIn("node-ctl", products)
+        self.assertNotIn("cluster-ctl", products)
+        self.assertNotIn("node-ctl", subject.changed_products({"sandboxer": ["cmd/sandbox-ctl/run.go"]}))
+        self.assertEqual(subject.changed_products({"sandboxer": ["pkg/diffstore/checkpoint_test.go"]}), [])
 
     def test_results_require_both_exact_architectures_and_predeclared_suites(self):
         results = {arch: architecture_result(self.plan, arch) for arch in subject.ARCHES}

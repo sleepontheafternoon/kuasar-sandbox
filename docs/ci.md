@@ -36,7 +36,13 @@ A marker occurs at most once and lists each allowed repository once. Companions 
 
 `source` mode resolves one published, validated aggregate through the maintained `releases/daily-preview.yaml` for mainline, or `releases/release.yaml` for a maintenance line. Only that selection or its declared predecessor can recover an interrupted publication. The plan binds its tag commit, six independent unit versions/SHAs, release/asset IDs, sizes, digests and successful aggregate validation. New dual aggregates also bind their declared profiles and exact validated asset hashes in release notes.
 
-When the maintained aggregate is not yet published, the explicit predecessor remains the validated binary baseline. The trusted admission base's manifest may also select newer component tags. Every differing tag must already have a complete dual-architecture publication with exact tag/commit, size and digest metadata. CI transports those exact tagged sources, rebuilds their products and linked or embedded consumers, and uses their test-owner trees before applying admitted candidate and companion sources. Candidate manifests cannot select these tags; incomplete publications and mixed requirement generations still fail. Runtime and kernel tags remain independent, and a runtime tag change never selects a kernel rebuild by itself.
+When the maintained aggregate is not yet published, the explicit predecessor remains the validated binary baseline. For a complete schema 4 aggregate, ordinary source PRs keep non-candidate products, tests and helpers on that aggregate's selected owner tags; pending publication selections do not replace this qualified tuple. Admitted candidate and companion sources are still applied with their normal affected-product and consumer coverage. The separate exact-assets release gate validates the newly selected publication tuple before it becomes a baseline.
+
+Historical capability cutovers retain the existing maintained-tag path when the authenticated aggregate evidence predates schema 4. Every differing tag must already have a complete dual-architecture publication with exact tag/commit, size and digest metadata. CI transports those exact tagged sources and rebuilds their products and consumers. Candidate manifests cannot select these tags or compatibility mode; incomplete publications, mixed requirement generations and requirement downgrades still fail. Runtime and kernel remain independent.
+
+A reviewed dependency cutover is an explicit, narrowly scoped exception for a component upgrade that cannot yet form a validated aggregate. `ci/integration/dependency-cutovers.json` defaults to an empty request list. Only the existing trusted admission **base** may supply it; a candidate manifest, PR body or candidate copy of this file cannot enable it. Each request pins one exact primary PR (repository, number, target branch, base/head/integration SHAs) and published unit tags, source SHAs, Release IDs and the complete sorted asset name/ID/size/SHA-256 digest set. Unknown fields, duplicate requests, extra companions, a stale candidate, incomplete/private releases and overriding the candidate's own release units fail closed.
+
+A matched request adds those published unit sources through the existing maintained-delta machinery, rebuilds their linked/embedded consumers and runs the full owner source gates and E2E selection under the existing architecture capabilities and credentialed exclusions. The original aggregate remains the validated **binary baseline**; the new combination is a candidate, not an accepted aggregate. Its independent `dependency_cutover` plan evidence records the trusted platform SHA, configuration digest and exact request; selected dependency test pins use the existing `release` role. Acceptance rechecks that the current trusted branch still contains the same request and that tag, Release and asset identities are unchanged, in addition to the normal live candidate checks. Unrelated reviewed requests do not invalidate it. Enable only after the implementation has passed normal CI with the empty configuration, in a separate reviewed configuration PR; remove the request after the new aggregate supplies the normal baseline. Changed PR heads require a new reviewed pin, not silent reselection.
 
 Missing baseline/ARM assets fail resolution with an explicit initialization requirement. The resolver never assembles component Latest versions or falls back to a full source build. Historical AMD64-only releases remain valid historical releases; they are not a dual baseline. See [first ARM initialization](release.md#first-arm-initialization).
 
@@ -44,38 +50,69 @@ Candidate and companion product inputs are compared against their baseline sourc
 
 Build may retrieve exact library sources needed by local Go replacements, without rebuilding every library repository's standalone binaries. Unmodified products remain byte-identical to downloaded baseline archives; candidate product hashes must equal this run's actual build outputs. This is not a claim that unrelated clean rebuilds are reproducible byte for byte.
 
-### Documentation qualification before downloads
+Tarstream carrier changes also rebuild `sandbox-ctl` and `node-ctl` with the selected accelerator source. A newly encoded carrier must reach readers linked with the same library input; this does not select a sandboxer storage feature or change its source revision.
 
-Source PR resolution first compares the complete exact base, head and integration
-Git trees for the primary and every admitted companion repository. Only ordinary
-`100644` Markdown changes in `README{,_zh}.md`, `test/e2e/README{,_zh}.md`,
-`docs/` and `test/e2e/guides/` may use the docs path. Platform also allows
+Sandboxer library changes likewise rebuild `node-ctl`, whose management and publication paths read checkpoint metadata. The orchestrator source selection remains unchanged. Working-set fixtures provide raw ext4 images through `diff_template` and leave active `diff` outputs absent; restore creates those outputs from the captured disk graph. Fresh active files follow the selected encryption policy, so local `off`/`auto` timing comparisons include active-file and carrier costs.
+
+Product-impact selection also adds consumer tests: accelerator/runtime changes that rebuild `flatten-ctl` select telemetry cases, and sandboxer library changes that rebuild `node-ctl` select `orchestrator.resource-*`. These cases use the plan's exact test-owner revisions and capability-matched lanes; they do not select another main revision. Atomic harness/dependency fixes use the reciprocal companion declaration above to qualify their explicit joint source tuple.
+
+### Documentation and manifest qualification before downloads
+
+Source PR resolution compares the complete exact base, head and integration Git
+trees for the primary and every admitted companion. The `docs` lane permits only
+ordinary `100644` Markdown in `README{,_zh}.md`, `test/e2e/README{,_zh}.md`,
+`docs/` and `test/e2e/guides/`. Platform also allows
 `workbench/README{,_zh}.md`, `ci/runner/README{,_zh}.md` and
-`test/demo/DEMO{,_zh}.md`. Mixed code, unknown repositories/paths, mode changes,
-symlinks, truncated tree responses and an empty diff retain full CI. Missing
-exact commit/tree identities fail admission; they never authorize a skip.
+`test/demo/DEMO{,_zh}.md`. The `manifest` lane adds only platform's
+`releases/release.yaml` and `releases/daily-preview.yaml`; it may include the same
+allowed documentation and runs both checks. Any source, CI/workflow, release
+tooling, test, runtime configuration, unknown path/repository or nonordinary file
+in any candidate retains full CI. Truncated trees and empty changes also retain
+full CI. Missing exact identities fail. Deleting a maintained manifest fails its
+pair validation; a symlink sibling cannot supply a manifest.
 
 Policy and checking code come from the platform's trusted baseline, including
 the platform companion's base when present. A candidate cannot add itself to the
-allowlist. A baseline without this executor uses full CI during rollout. The
-classifier runs before baseline assets, source archives and build environments
-are downloaded. It retrieves tree metadata and Markdown/reference context only,
-and executes no candidate code. The shared `ci/check_docs.py` rules check UTF-8,
-local links and anchors, reciprocal pairs and English defaults. English-only
-documents remain valid. Changed documents and unchanged documents referring to
-renamed/deleted/changed targets are checked; unrelated documentation debt is not
-silently expanded into the focused check. External access and translation
-completeness still require review.
+allowlist. A baseline without the new manifest policy keeps manifest changes on
+full CI. The candidate workflow still tests its own contracts through the full
+source gate, so the implementation can be tested before activation. Classification
+precedes baseline assets, source archives and build environments. No candidate
+code executes in either light lane.
+
+The shared `ci/check_docs.py` rules check UTF-8, local links and anchors,
+reciprocal pairs and English defaults. English-only documents remain valid.
+Changed documents and unchanged documents referring to renamed/deleted/changed
+targets are checked; unrelated documentation debt is not expanded into this
+focused check. External access and translation completeness still require review.
+
+Manifest qualification parses both maintained files at the exact head and merge
+with the existing release parser: fields, unit tags, Stable/Preview versions,
+predecessor ordering, pair consistency and maintenance-line ownership must be
+valid. The existing aggregate reader authenticates declared published predecessors
+and any already published selection. A historical AMD64-only predecessor keeps
+its original x86 validation scope; this comparison reference is not promoted to
+a usable dual baseline. Already published current selections and new declared
+Workbench releases retain their complete architecture/asset requirements.
+Published components use the existing
+exact tag/Release/dual-architecture asset checks. Preview source and dependency
+bindings remain required; a changed published dependency may reuse a consumer
+only when the existing linked-input projection is identical in complete source
+trees. A new component tag, tag awaiting publication or draft is recorded as a
+pending publication prerequisite, with its release source branch and selected
+dependencies. Reuse against a pending dependency records the outstanding linked-
+input verification. The release coordinator still freezes future source commits
+and satisfies these prerequisites. This is release-plan validation, never a claim
+that a future tuple has passed E2E; no component publication is dispatched here.
 
 The existing finalizer accepts deliberate heavy-job skips only after successful
-docs evidence matches this exact source set, trusted policy, run and attempt,
+light evidence matches this exact source set, trusted policy, run and attempt,
 and current PR/base/head/companion admission is rechecked. Missing, cancelled,
-empty or stale evidence cannot pass. Aggregate release validation always uses
-the full path. Record actual docs/full PR queue, preparation and final feedback
-from Actions before claiming savings. The implementation PR itself follows the
-full path because it changes executable policy/workflows. Rollback removes the
-docs branch from resolution and restores full scheduling; it does not relax
-source admission, required checks or the existing language-selector policy.
+failed, empty or stale evidence cannot pass. Evidence retains the manifest plans,
+published identities and pending prerequisites. Aggregate release `exact-assets`
+always retains its complete E2E and Workbench acceptance. Record actual
+`docs`/`manifest`/`full` Actions timings before claiming savings. The implementation
+PR itself follows full CI because it changes executable policy/workflows.
+Rollback restores full scheduling without relaxing admission or required checks.
 
 
 The Go EROFS runtime requires only init, envd and flatten-ctl inside its bundle.

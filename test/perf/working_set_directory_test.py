@@ -192,7 +192,11 @@ class WorkingSetDiffTest(unittest.TestCase):
             calls = (root / "formats").read_text().splitlines() if (root / "formats").exists() else []
             files = {}
             for name in ("root", "scratch", "dataset"):
-                path = diffs / f"{name}.ext4"
+                self.assertFalse((diffs / f"{name}.ext4").exists(), "active output must be created by the product")
+                path = diffs / f"{name}.ext4.template"
+                if not path.exists():
+                    files[name] = None
+                    continue
                 stat = path.stat()
                 with path.open("rb") as stream:
                     files[name] = (stat.st_size, stat.st_blocks, stream.read(4096))
@@ -211,18 +215,12 @@ class WorkingSetDiffTest(unittest.TestCase):
             with self.subTest(mode=mode):
                 calls, files = self.prepare(mode)
                 self.assertEqual(calls, [])
-                self.assertEqual({name: value[0] for name, value in files.items()},
-                                 {"root": 1 << 30, "scratch": 512 << 20, "dataset": 512 << 20})
-                for size, blocks, prefix in files.values():
-                    self.assertEqual(blocks, 0)
-                    self.assertEqual(prefix, bytes(4096))
+                self.assertEqual(files, {"root": None, "scratch": None, "dataset": None})
 
     def test_restore_discards_stale_fixture_pages(self):
         calls, files = self.prepare("restore", reused=True)
         self.assertEqual(calls, [])
-        for size, blocks, prefix in files.values():
-            self.assertEqual(blocks, 0)
-            self.assertEqual(prefix, bytes(4096))
+        self.assertEqual(files, {"root": None, "scratch": None, "dataset": None})
 
 
 class WorkingSetCheckpointTest(unittest.TestCase):

@@ -261,10 +261,9 @@ Release 的 `target_commitish` 是完整且匹配的源码 SHA 时才允许恢�
 
 ## 6. 组件发布 CLI
 
-控制器请求中的 SHA 字段是自动观察的身份，不是人工版本输入。CLI 示例中的 `OWNER_REPOSITORY`、`SOURCE_REF` 和 `PLATFORM_REF` 分别表示 owner 仓库、源码分支和聚合分支。
+Daily 自动观察源码 SHA。手动组件发布可选择精确的历史源码 SHA；版本与依赖选择仍使用 Tag，不使用 SHA 作为版本。CLI 示例中的 `OWNER_REPOSITORY`、`SOURCE_REF` 和 `PLATFORM_REF` 分别表示 owner 仓库、源码分支和聚合分支。
 
-组件 workflow 始终从仓库 `main` 加载受信任工具,但必须显式传入实际源码分支和精确
-分支 HEAD SHA。SHA 由控制器或 GitHub API 自动读取，不能手工作为版本填写。以下示例定义匹配的仓库与分支，用于自动身份查询和派发；自动 Daily 提供相同输入：
+组件 workflow 始终从仓库 `main` 加载受信任工具，但必须显式传入允许的源码分支及该分支 first-parent 历史中的精确提交 SHA。以下示例定义匹配的仓库与分支，用于自动身份查询和派发；自动 Daily 提供相同输入：
 
 ```bash
 OWNER_REPOSITORY=kuasar-sandbox/accelerator
@@ -293,8 +292,7 @@ gh workflow run release.yml \
 orchestrator 接收 `accelerator_version`、`connector_version` 和 `sandboxer_version`;
 runtime 只接收与镜像实际载荷一致的 `accelerator_version` 和 `sandboxer_version`;
 vmlinux 不接收内部组件版本输入。runtime 与 vmlinux 使用各自工作流。
-预检要求 `source_sha` 仍是 `source_ref` 的 HEAD,构建恢复预检按分支获取并验证的 run artifact,最终 Tag 也指向该
-SHA。依赖参数必须对应已经完整发布的精确 Release；预检按所选 Tag 获取并固定校验后的源码输入。每种架构在独立的原生 job 中构建。
+预检获取允许的 `main` 或匹配版本线的 `release/vMAJOR.MINOR.x` 分支，要求 `source_sha` 属于其 first-parent 历史。Daily 默认仍选择分支 HEAD；手动指定历史提交时，产品、测试、helper 声明、配方与文档全部来自该提交，不从新版补齐缺失契约。预检保存准入时的分支 tip、所选 SHA/tree、分支、单元与版本，并单独记录可信框架及 workflow 修订。freeze 复用这份不可变准入输入，不再次抓取推进中的分支；双架构构建恢复同一份源码，最终 Tag 指向所选提交。从 main 准入的历史提交仍按主线处理 Latest，维护线语义不变。Preview 不是所有组件发布的强制前置条件；晋级已验收 Preview 时，操作者仍须核对每个组件源码与依赖元组对应公开绑定。PR merge-ref 与聚合 branch-HEAD 的严格准入不变。依赖参数必须对应已经完整发布的精确 Release；预检按所选 Tag 获取并固定校验后的源码输入。每种架构在独立的原生 job 中构建。
 Preview 还要求 `aggregate_sha` 所指平台提交中的
 `daily-preview.yaml/version + preview_version` 精确等于聚合版本,且
 `components.<unit>` 精确等于待发布 Tag。预检固定这份清单绑定；取得 publish concurrency lock 后，发布核验固定证据并检查实时 Stable 封线状态，不重新获取更新后的分支清单。所有组件 Release notes 都记录源码分支、源码
@@ -376,6 +374,10 @@ Workbench 的 prepare 与构建期 collector 共享规范用例发现和外部�
 新增原生 workbench 门禁导入这些精确暂存字节，从空的私有 Docker 状态、无外部路由开始，通过公开入口离线 prepare，再仅重新连接所属 bridge 执行 run，保留 Demo 真实的 Guest Internet 出站断言。具备 KVM 的原生 x86 和 ARM 使用相同的当前完整常规用例选择；GitHub 托管 ARM runner 没有 KVM 设备：其显式 `artifact-only` workbench 结果验证归档、导入镜像及原生发行输入，单独记录计划用例，不声称完成系统或离线执行。ARM 原有原生构建及非 KVM E2E 通道仍为必需。完整原生 ARM workbench 验收使用已发布字节及与 x86 相同的 `--all --exclude storage.obs.sh` 选择，包含 orchestrator、builder、telemetry 和静态无 libc cgroup probe。所选 Guest 内核必须提供实际 PMEM/EROFS `dax=always`，保留架构及运行断言。用例列表由精确发行文件产生，不固定为历史数量。旧的有限 workbench 验收仅对其原有用例范围有效。私有 daemon 隔离、实际所选 KVM/UFFD/TUN/BPF 操作及所有权清理都必须通过。Workbench 系统模式使用 Docker privileged 权限，面向可信系统管理员；自定义宿主 AppArmor/seccomp 策略工具及权限收缩专项证明不再是部署或发布前置条件。通用系统启动报告不可用的硬件能力，不冒充相关产品测试已经通过。工具链环境不能替代单独的无编译器 runtime 门禁。新的原生结果声明 `native-full`，历史 `system` 保留原有选择范围，托管 ARM 继续显式声明 `artifact-only`。这些记录绑定精确 framework、测试来源事实、产品摘要、archive/config 身份、实际压缩大小、压缩/导入时间和观测到的磁盘峰值；系统结果另含启动时间及已执行用例证据；磁盘观测不是配额。
 
 发布把已测试的保存镜像复制到 `ghcr.io/kuasar-sandbox/workbench:<去掉-release-前缀的聚合版本>`，验证两种架构的 config 身份和多架构 index，并匿名回读每个按 digest 固定的镜像到临时 Docker archive。归档校验器将每个解压后的镜像层与已测试离线镜像的 config 逐一绑定，发布重试也必须通过。registry digest、镜像 ID、离线 archive hash 含义各自独立。已有同名 Tag/资产必须匹配；重试只补传缺失资产，不覆盖测试字节。跨服务发布可恢复：只有 registry 和完整 GitHub 资产集合一致，GitHub draft 才公开。冲突时失败关闭，不改写历史源码和已发布字节。
+
+Release 说明应总结实际选中版本的变化和兼容性限制，自动 commit 列表仅作辅助。发布工具 checkout 中经过审阅的 `release/notes/<aggregate-version>.md` 会在绑定阶段替换自动生成的人类说明。首行格式为 `<!-- kuasar-release-notes {"version":"release-v…","aggregate_sha":"<已测试源码的 40 位 SHA>","components":{…}} -->`，组件表必须与六个已测试单元的版本完全一致。其余 Markdown 保留标准标题、版本表和六个组件更新段。`bind-validation.py --notes <file>` 也可显式指定同格式文件。源码或选择不匹配即报错。替换只涉及 Release 说明：notes 不在不可变资产清单中，产品、源码记录和验证结果仍逐项校验，保持不变。
+
+正文的 125,000 字符预算包含完整验证绑定，以及最终 registry proof 的保守预留。正常长度的自动说明保持原样；超限时仅去掉完全相同的可选 `case_files` 副本，再把自动 commit 行收起到保留的完整比较链接。若审阅正文仍超过剩余预算，发布正文保留交付及资格范围说明，并链接到发布工具精确提交中的完整说明。该回退要求文件与已提交字节一致，不链接浮动分支，也不静默截断作者的限制说明。未知格式的超长正文，或连最小正文都容纳不下的机器证据，会在任何 tag/registry 写入前失败并报告实际大小、预算和各块大小；不会提高上限或裁剪证据。聚合组装阶段也会在大小检查前收起超长的自动 commit 清单。因此，已验收 stage 可在正常审阅并合入说明或发布工具修复后，仅重试 publish，无需重建或替换已测试资产。
 
 用户只解压所选产品架构与 `platform-release`；`workbench-<arch>-v*.tar.gz` 使用 `docker load` 导入，不能解压到产品目录。[快速开始](quickstart_zh.md) 检查声明集合并按显式资产类别下载。用户可以不下载 workbench，但新聚合发布必须包含两种架构镜像。
 

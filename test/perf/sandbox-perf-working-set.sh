@@ -448,12 +448,12 @@ DATASET_KEY=$("$BIN/manifest-ctl" store --manifest-config "$WORK/manifest.yaml" 
 prepare_diff() { # $1=path, $2=size, $3=cold|restore
     # Restore must inherit the captured filesystem. Fresh mkfs metadata would
     # occupy upper COW pages and mask the snapshot's superblock/inodes/data.
-    # Keep an existing sparse plaintext file so crypto.local=auto does not
-    # introduce active-DIFF encryption into the local-artifact comparison.
-    truncate -s 0 "$1"
-    truncate -s "$2" "$1"
+    # Raw mkfs images are immutable provisioning inputs. The active file is
+    # created by the selected product, using that product's current format.
+    rm -f -- "$1" "$1.template"
     if [ "$3" = cold ]; then
-        mkfs.ext4 -q -F -O ^has_journal "$1"
+        truncate -s "$2" "$1.template"
+        mkfs.ext4 -q -F -O ^has_journal "$1.template"
     fi
 }
 
@@ -475,10 +475,10 @@ EOF
   cmdline: "console=hvc0 printk.time=1"
   root:
     base: manifest://$ROOT_KEY
-    overlay: { diff: file://$dir/root.ext4 }
+    overlay: { diff: file://$dir/root.ext4, diff_template: file://$dir/root.ext4.template }
   disks:
-    - { name: scratch, diff: file://$dir/scratch.ext4 }
-    - { name: dataset, base: manifest://$DATASET_KEY, overlay: { diff: file://$dir/dataset.ext4 } }
+    - { name: scratch, diff: file://$dir/scratch.ext4, diff_template: file://$dir/scratch.ext4.template }
+    - { name: dataset, base: manifest://$DATASET_KEY, overlay: { diff: file://$dir/dataset.ext4, diff_template: file://$dir/dataset.ext4.template } }
 EOF
         cat >>"$path" <<'EOF'
 mounts:
@@ -714,10 +714,10 @@ cp "$B_DIR/info.json" "$B_DIR/run.log" "$B_DIR/seed.log" "$B_DIR/snapshot.log" \
 echo "==> immutable B: $B_ARTIFACT" >&2
 
 # Build a logically equivalent encrypted B once for the dedicated local
-# tarstream comparison. Active diffs stay plaintext: cold fixtures are
-# journal-free filesystems, while restore targets have no allocated pages and
-# inherit the captured filesystem. crypto.local=auto changes only captured
-# local artifacts and does not mix DIFF/XTS cost into the measurement.
+# local-storage comparison. Cold inputs are raw journal-free templates; restore
+# inherits the captured filesystem. Fresh active DIFFs follow crypto.local too,
+# so off/auto timings include active-DIFF/XTS and carrier costs. They do not
+# isolate the cost of the carrier encoding alone.
 AUTO_B_DIR="$WORK/base-auto"
 AUTO_B_OUT="$AUTO_B_DIR/snapshot"
 mkdir -p "$AUTO_B_OUT"
